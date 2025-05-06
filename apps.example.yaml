@@ -1,0 +1,75 @@
+Living room:
+  unique_id: living_room  # Unique identifier for this blinds instance - is used to generate binary_sensors in Home Assistant. No space alowed
+  module: blinds                # Python module name containing the blinds logic
+  class: Blinds                 # Class name within the module
+  
+  entities:
+    cover: cover.entity         # Home Assistant entity ID of the blinds/cover to control
+    brightness_shadow: sensor.brighness        # Brightness sensor for shadow detection
+    brightness_dawn: sensor.brighness_2        # Optional separate brightness sensor for dawn handling
+    window_sensor: binary_sensor.window_sensor # Window contact sensor for ventilation/lockout
+    climate: climate.dg_rt_kuche_essen_woh    # Climate entity for solar heating function
+  
+  facade:
+    facade_angle: 253          # Direction the facade/window faces in degrees (0=North, 90=East, etc)
+    facade_offset_entry: -50   # Angle offset when sun starts hitting the window relative to facade
+    facade_offset_exit: 50     # Angle offset when sun stops hitting the window relative to facade
+    min_elevation: 0          # Minimum sun elevation for shadow handling (e.g. for tree shadows)
+    max_elevation: 90         # Maximum sun elevation for shadow handling (e.g. for roof overhangs)
+  
+  move_contraints:
+    min_angle: 50             # Minimum tilt angle allowed in shadow mode (0-100%)
+    max_angle: 100            # Maximum tilt angle allowed in shadow mode (0-100%)
+  
+  blinds:
+    slat_width: 90           # Width of individual blind slats in mm
+    slat_distance: 80        # Distance between slats in mm
+    angle_offset: 0          # Offset to add to calculated tilt angle
+    angle_step: 5           # Round tilt angles to nearest multiple of this value
+    height_step: 5          # Round height positions to nearest multiple of this value
+    angle_tolerance: 5      # Minimum angle change required to trigger movement
+    height_tolerance: 5     # Minimum height change required to trigger movement
+  
+  neutral:
+    neutral_height: 100     # Default height position (0-100%)
+    neutral_angle: 100     # Default tilt angle (0-100%)
+  
+  shadow_active: True      # Enable shadow protection mode
+  shadow:
+    shadow_horizontal_angle: 0     # Tilt angle when transitioning through horizontal position
+    shadow_brightness_threshold: 50000  # Brightness threshold to activate shadow mode (lux)
+    shadow_brightness_threshold_entity: sensor.sunshine_threshold  # Optional dynamic threshold provided by Home Assistant.
+    shadow_height: 2       # Height position in shadow mode (0-100%)
+  
+  dawn_active: True       # Enable dawn/dusk handling
+  dawn:
+    dawn_height: 0        # Height position at dawn/dusk (0-100%)
+    dawn_angle: 0         # Tilt angle at dawn/dusk (0-100%)
+    dawn_horizontal_angle: 0  # Tilt angle when transitioning through horizontal
+    dawn_prevent_move_up_after_dusk: True  # Prevent raising blinds after sunset
+    dawn_brightness_threshold: 10  # Brightness threshold for dawn/dusk detection
+  
+  delays:
+    neutral_to_shadow_delay: 300           # Delay in seconds before entering shadow mode
+    neutral_to_dawn_delay: 300             # Delay before entering dawn mode
+    shadow_to_horizontal_delay: 300        # Delay when exiting shadow mode via horizontal
+    horizontal_to_neutral_delay: 900       # Delay when moving from horizontal to neutral
+    dawn_to_horizontal_delay: 300          # Delay when exiting dawn mode via horizontal
+    dawn_horizontal_to_neutral_delay: 900  # Delay from dawn horizontal to neutral
+  
+  ventilation_active: False    # Enable ventilation handling
+  ventilation:
+    ventilation_height: False  # Height position for ventilation mode (False=no height change for ventilation)
+    ventilation_angle: 0       # Tilt angle for ventilation mode
+  
+  solar_heating_available: True # Enable solar heating in general for this blinds. Also the generated binary_sensor "solar heating active" in HHome Assistant has to be set to "on".
+  solar_heating:
+    solar_heating_temperature: 22.5    # Target room temperature for solar heating
+    solar_heating_hysterese: 0.5      # Temperature hysteresis for solar heating
+    solar_heating_height: 0           # Height position during solar heating
+    solar_heating_angle: 0           # Tilt angle during solar heating
+  
+  lockout_protection_active: True    # Enable window lockout protection
+  blinds_locked_external_for_min: 30 # Minutes to stay locked after external control (when Blinds were moved outside from this logic)
+  save_states: True                  # Save state between restarts
+  DEBUG: False                       # Enable debug logging
