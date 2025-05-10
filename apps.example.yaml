@@ -1,3 +1,4 @@
+# Blinds config
 Living room:
   unique_id: living_room  # Unique identifier for this blinds instance - is used to generate binary_sensors in Home Assistant. No space alowed
   module: blinds                # Python module name containing the blinds logic
@@ -7,8 +8,8 @@ Living room:
     cover: cover.entity         # Home Assistant entity ID of the blinds/cover to control
     brightness_shadow: sensor.brighness        # Brightness sensor for shadow detection
     brightness_dawn: sensor.brighness_2        # Optional separate brightness sensor for dawn handling
-    window_sensor: binary_sensor.window_sensor # Window contact sensor for ventilation/lockout
-    climate: climate.dg_rt_kuche_essen_woh    # Climate entity for solar heating function
+    window_sensor: binary_sensor.window_sensor_living # Window contact sensor for ventilation/lockout
+    climate: climate.living_room    # Climate entity for solar heating function
   
   facade:
     facade_angle: 253          # Direction the facade/window faces in degrees (0=North, 90=East, etc)
@@ -73,3 +74,56 @@ Living room:
   blinds_locked_external_for_min: 30 # Minutes to stay locked after external control (when Blinds were moved outside from this logic)
   save_states: True                  # Save state between restarts
   DEBUG: False                       # Enable debug logging
+
+# Shutter config - Comments see above. Similar to Blinds but without tile/angle
+# Light-strip when dynamic shadowing is calculated by window height
+Dining Room:
+  unique_id: dining_room
+  module: shutter
+  class: Shutter
+  entities:
+    cover: cover.dining_room
+    brightness_shadow: sensor.brighness
+    brightness_dawn: sensor.brighness2
+    window_sensor: binary_sensor.window_sensor_dining
+    climate: climate.dining_room
+  facade:
+    facade_angle: 180
+    facade_offset_entry: -85
+    facade_offset_exit: 85
+    min_elevation: 0
+    max_elevation: 90
+  ventilation_active: True
+  ventilation:
+    ventilation_height: 40
+  solar_heating_available: False
+  solar_heating:
+    solar_heating_temperature: 23
+    solar_heating_hysterese: 0.5
+    solar_heating_height: 0
+  move_constraints:
+    min_height: 0
+    max_height: 100
+    height_step: 5
+    height_tolerance: 5
+  neutral:
+    neutral_height: 100
+  shadow_active: True
+  shadow:
+    shadow_brightness_threshold_entity: sensor.sunshine_threshold
+    total_height: 2000 # Height of window in mm
+    light_strip: 500   # Length of max. light strip
+  dawn_active: True
+  dawn:
+    dawn_height: 0
+    dawn_prevent_move_up_after_dusk: True
+    dawn_brightness_threshold: 20
+  delays:
+    neutral_to_shadow_delay: 150
+    neutral_to_dawn_delay: 300
+    shadow_to_neutral_delay: 900
+    dawn_to_neutral_delay: 900
+  lockout_protection_active: True
+  blinds_locked_external_for_min: 30
+  save_states: True
+  DEBUG: True
