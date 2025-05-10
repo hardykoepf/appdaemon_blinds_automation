@@ -110,6 +110,7 @@ Dining Room:
     neutral_height: 100
   shadow_active: True
   shadow:
+    shadow_brightness_threshold: 50000 # Either fix defined threshold or next by entity
     shadow_brightness_threshold_entity: sensor.sunshine_threshold
     total_height: 2000 # Height of window in mm
     light_strip: 500   # Length of max. light strip
