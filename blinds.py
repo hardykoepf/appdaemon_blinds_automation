@@ -14,6 +14,7 @@ STATE_ON = 'on'
 STATE_OFF = 'off'
 WINDOW_OPEN = 'on'
 WINDOW_CLOSED = 'off'
+UNAVAILABLE = 'unavailable'
 
 class Blinds(Hass):
     """Represents a single blinds with its configuration and state."""
@@ -558,8 +559,8 @@ class Blinds(Hass):
                     self.debug(f"Prevent from moving blinds up after dusk. Current height: {self.current_height}")
                     self.new_height = self.current_height
 
-        # lockout protection
-        if self.params.get("lockout_protection_active") and self.window_open == WINDOW_OPEN:
+        # lockout protection - also when window sensor is unavailable activate lockout protection
+        if self.params.get("lockout_protection_active") and (self.window_open == WINDOW_OPEN or self.window_open == UNAVAILABLE):
             if self.current_height > self.calculated_height:
                 # When new height is lower than actual height, do not change height
                 self.new_height = self.current_height
