@@ -15,6 +15,7 @@ STATE_OFF = 'off'
 WINDOW_OPEN = 'on'
 WINDOW_CLOSED = 'off'
 UNAVAILABLE = 'unavailable'
+UNKNOWN = 'unknown'
 
 class Shutter(Hass):
     """Represents a single shutter with its configuration and state."""
@@ -627,10 +628,14 @@ class Shutter(Hass):
             if self.shutter_locked_external_till is None:
                 self.debug("Method check_external_lock no time found. Setting to off")
                 self.set_state(entity_id=self.name_shutter_locked_external, state=STATE_OFF)
+                # Read entity to be in sync with HASS
+                self.blinds_locked_external = self.get_state(entity_id=self.name_shutter_locked_external)
             elif datetime.now() > self.shutter_locked_external_till:
                 # reset lock
                 self.debug("Method check_external_lock time is up. Setting to off")
                 self.set_state(entity_id=self.name_shutter_locked_external, state=STATE_OFF)
+                # Read entity to be in sync with HASS
+                self.blinds_locked_external = self.get_state(entity_id=self.name_shutter_locked_external)
                 self.shutter_locked_external_till = None
 
     def get_shadow_brightness_threshold(self):
@@ -804,7 +809,7 @@ class Shutter(Hass):
     def on_sun_change(self, entity, attribute, old, new, kwargs):
         """Stores changes in instance variable."""
         self.debug(f"Sun change triggered: {new=}")
-        if new is None:
+        if new in [None, UNKNOWN, UNAVAILABLE]:
             return
         
         self.azimuth = new['attributes']['azimuth']
@@ -838,14 +843,14 @@ class Shutter(Hass):
     def on_brightness_shadow_change(self, entity, attribute, old, new, kwargs):
         """Handle changes in brightness."""
         self.debug(f"Brightness shadow change triggered: {entity=}, {old=}, {new=}")
-        if new is None:
+        if new in [None, UNKNOWN, UNAVAILABLE]:
             return
         self.brightness_shadow = int(float(new))
 
     def on_sunshine_brightness_threshold_change(self, entity, attribute, old, new, kwargs):
         """Handle change of Sunshine Brightness Threshold Sensor Change"""
         self.debug(f"Sunshine Brightness Threshold Sensor change triggered: {entity=}, {old=}, {new=}")
-        if new is None:
+        if new in [None, UNKNOWN, UNAVAILABLE]:
             return
         self.debug(f"Updating internal sunshine_brightness_threshold to: {new}")
         self.sunshine_brightness_threshold = int(float(new))
@@ -853,7 +858,7 @@ class Shutter(Hass):
     def on_brightness_dawn_change(self, entity, attribute, old, new, kwargs):
         """Handle changes in brightness."""
         self.debug(f"Brightness dawn change triggered: {entity=}, {old=}, {new=}")
-        if new is None:
+        if new in [None, UNKNOWN, UNAVAILABLE]:
             return
         self.brightness_dawn = int(float(new))
 
@@ -861,7 +866,7 @@ class Shutter(Hass):
     def on_window_change(self, entity, attribute, old, new, kwargs):
         """Handle changes for window."""
         self.debug(f"Window change triggered: {entity=}, {old=}, {new=}")
-        if new is None:
+        if new in [None, UNKNOWN, UNAVAILABLE]:
             return
         self.window_open = new
         # Update positions immediately
@@ -870,7 +875,7 @@ class Shutter(Hass):
     def on_temperature_change(self, entity, attribute, old, new, kwargs):
         """Handle changes on temperature."""
         self.debug(f"Current temperature change triggered: {entity=}, {old=}, {new=}")
-        if new is None:
+        if new in [None, UNKNOWN, UNAVAILABLE]:
             return
         else:
             self.current_temperature = float(new)
@@ -878,7 +883,7 @@ class Shutter(Hass):
     def on_cover_change(self, entity, attribute, old, new, kwargs):
         # logic for handling changes
         # self.debug(f"Cover change triggered: {entity=}, {attribute=}, {old=}, {new=}")
-        if new is None or new['state'] in ["opening", "closing"]:
+        if new is None or new['state'] in ["opening", "closing", UNKNOWN, UNAVAILABLE]:
             # Filtering these states. Maybe it's a manual trigger or triggered by this logic
             return
         else:
@@ -896,27 +901,20 @@ class Shutter(Hass):
                 self.debug(f"on_cover_change last calculated height: {self.last_height}")
                 manual_change = True
             
-            # Logic when manual change detected
-            if manual_change:
+            # Logic when manual change detected - when aleady locked by any other lock no external lock detection
+            if manual_change and self.manipulation_active == STATE_OFF and self.shutter_locked == STATE_OFF:
                 # When not already locked due to external change, lock it and set timer
                 if self.shutter_locked_external == STATE_OFF:
-                    # Update switch
-                    self.shutter_locked_external == STATE_ON
                     # Update timer
                     self.shutter_locked_external_till = datetime.now() + timedelta(minutes=self.params['shutter_locked_external_for_min'])
                     # AFTER timer update, also change state of input_boolean
                     self.set_state(entity_id=self.name_shutter_locked_external, state=STATE_ON)
+                    # Sync state with HASS
+                    self.shutter_locked_external == self.get_state(entity_id=self.name_shutter_locked_external)
                     
                     self.debug(f"External lock timer set to: {self.shutter_locked_external_till}")
                 else:
                     self.debug(f"Already locked by external change till: {self.shutter_locked_external_till}")
-            else:
-                if self.shutter_locked_external == STATE_ON:
-                    # Update switch
-                    self.shutter_locked_external == STATE_OFF
-                    # Update timer
-                    self.shutter_locked_external_till = None
-                    self.set_state(entity_id=self.name_shutter_locked_external, state=STATE_OFF)
 
     def save_states_to_file(self):
         """Save current states to JSON file with timestamp."""
