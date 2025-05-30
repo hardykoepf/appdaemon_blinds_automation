@@ -551,7 +551,7 @@ class Shutter(Hass):
             and self.manipulation_active == STATE_OFF):
             # Check if height changed to actual shutter height respecting tolerance
             self.debug(f"Current positions: height: {self.current_height}")
-            tolerance_height = self.params['move_contraints']['height_tolerance']
+            tolerance_height = self.params['move_constraints']['height_tolerance']
             if not (self.current_height <= min((height + tolerance_height), 100) and self.current_height >= max((height - tolerance_height), 0)):
                 result = self.call_service("cover/set_cover_position",
                                 entity_id=self.params['entities']['cover'],
@@ -614,10 +614,10 @@ class Shutter(Hass):
         height_pct = 100 - round(height * 100 / self.params['shadow']['total_height'])
 
         # Apply min/max constraints from config
-        if height_pct < self.params['move_contraints']['min_height']:
-            height_pct = self.params['move_contraints']['min_height']
-        elif height_pct > self.params['move_contraints']['max_height']:
-            height_pct = self.params['move_contraints']['max_height']
+        if height_pct < self.params['move_constraints']['min_height']:
+            height_pct = self.params['move_constraints']['min_height']
+        elif height_pct > self.params['move_constraints']['max_height']:
+            height_pct = self.params['move_constraints']['max_height']
         
         # Apply stepping
         return round(height_pct / self.params['move_constraints']['height_step']) * self.params['move_constraints']['height_step']
@@ -648,8 +648,8 @@ class Shutter(Hass):
 
     def calc_stepping_height(self, height):
         """ calculate height fitting step width """
-        if self.params['move_contraints']['height_step'] != 0 and (height % self.params['move_contraints']['height_step']) != 0:
-            return height - self.params['move_contraints']['height_step'] + (height % self.params['move_contraints']['height_step'])
+        if self.params['move_constraints']['height_step'] != 0 and (height % self.params['move_constraints']['height_step']) != 0:
+            return height - self.params['move_constraints']['height_step'] + (height % self.params['move_constraints']['height_step'])
 
     def handle_state_shadow_to_neutral_timer(self):
         if self.in_sun() and self.params['shadow_active']:
@@ -750,8 +750,8 @@ class Shutter(Hass):
         if self.params['dawn_active']:
             if self.get_dawn_brightness() > self.params['dawn']['dawn_brightness_threshold']:
                 # Brightness below threshold - start timer for moving to horizontal
-                self.debug("Brightness above threshold. Switching from DAWN to DAWN_TO_HORIZONTAL_TIMER")
-                self.timer = datetime.now() + timedelta(seconds = int(self.params['delays']['dawn_to_horizontal_delay']))
+                self.debug("Brightness above threshold. Switching from DAWN to DAWN_TO_NEUTRAL_TIMER")
+                self.timer = datetime.now() + timedelta(seconds = int(self.params['delays']['dawn_to_neutral_delay']))
                 self.debug(f"Timer finish at: {self.timer}")
                 return self.STATE_DAWN_TO_NEUTRAL_TIMER
             else:
@@ -893,7 +893,7 @@ class Shutter(Hass):
             self.current_height = new['attributes']['current_position']
 
             # Check position
-            tolerance_height = self.params['move_contraints']['height_tolerance']
+            tolerance_height = self.params['move_constraints']['height_tolerance']
             if self.current_height <= min((self.last_height + tolerance_height), 100) and self.current_height >= max((self.last_height - tolerance_height), 0):
                 self.debug(f"on_cover_change detected expected position in height: {self.current_height}")
             else:
