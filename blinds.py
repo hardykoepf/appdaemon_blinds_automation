@@ -96,6 +96,12 @@ class Blinds(Hass):
         # Merge default config with provided args (apps.yaml)
         self.params = self.deep_merge_config(self.DEFAULT_CONFIG, self.args)
 
+        # Add new variables for tracking automated changes
+        self.last_automated_change = None
+        self.automated_change_window = 15  # seconds to wait for cover feedback
+        self.expected_height = None 
+        self.expected_angle = None
+
         # Validate config
         self.validate_config()
 
@@ -112,10 +118,10 @@ class Blinds(Hass):
 
         # Read actual values on initilization
         self.current_height = self.get_state(self.params['entities']['cover'], attribute='current_position')
-        self.last_height = self.current_height
+        self.expected_height = self.current_height
         self.debug(f"Current height: {self.current_height}")
         self.current_angle = self.get_state(self.params['entities']['cover'], attribute='current_tilt_position')
-        self.last_angle = self.current_angle
+        self.expected_angle = self.current_angle
         self.debug(f"Current angle: {self.current_angle}")
         
         # Read configured sensors.
@@ -224,40 +230,40 @@ class Blinds(Hass):
         else:
             if not self.params['entities'].get('cover'):
                 self.error(f"Missing mandatory configuration: entities.cover")
-                result: False
+                result = False
             elif not self.entity_exists(self.params['entities']['cover']):
                 self.error(f"Configuration entity entities.cover: {self.params['entities']['cover']} could not be found in HASS")
-                result: False
+                result = False
                 
             if not self.params['entities'].get('brightness_shadow'):
                 self.error(f"Missing mandatory configuration: entities.brightness_shadow")
-                result: False
+                result = False
             elif not self.entity_exists(self.params['entities']['brightness_shadow']):
                 self.error(f"Configuration entity entities.brightness_shadow: {self.params['entities']['brightness_shadow']} could not be found in HASS")
-                result: False
+                result = False
 
             if self.params['entities'].get('brightness_dawn'):
                 if not self.entity_exists(self.params.get('entities', {}).get('brightness_dawn')):
                     self.error(f"Configuration entity entities.brightness_dawn: {self.params.get('entities', {}).get('brightness_dawn')} could not be found in HASS")
-                    result: False
+                    result = False
 
             if self.params.get('lockout_protection_active') or self.params.get('ventilation_active'):
                 if not self.entity_exists(self.params.get('entities', {}).get('window_sensor')):
                     self.error(f"Configuration entity entities.window_sensor: {self.params.get('entities', {}).get('window_sensor')} could not be found in HASS")
-                    result: False
+                    result = False
 
             if self.params.get('solar_heating_available'):
                 if not self.entity_exists(self.params.get('entities', {}).get('climate')):
                     self.error(f"Configuration entity entities.climate: {self.params.get('entities', {}).get('climate')} could not be found in HASS")
-                    result: False
+                    result = False
 
         if self.params['facade']['min_elevation'] >= self.params['facade']['max_elevation']:
             self.error("Configuration error min_elevation is greater or equal max_elevation. Makes no sense.")
-            result: False
+            result = False
 
         if self.params['move_contraints']['min_angle'] >= self.params['move_contraints']['max_angle']:
             self.error("Configuration error min_angle is greater or equal max_angle. Makes no sense.")
-            result: False
+            result = False
 
         if not self.params.get('facade'):
             self.error(f"Configuration: Missing mandatory 'facade' settings.")
@@ -520,7 +526,7 @@ class Blinds(Hass):
                     self.hysterese_reached = True
                     # Update status
                     if self.solar_heating_state == STATE_ON:
-                        self.solar_heating_state == STATE_OFF
+                        self.solar_heating_state = STATE_OFF
                         self.set_state(self.name_solar_heating_status, STATE_OFF)
                         self.debug("Temperature reached and above threshold. Solar heating status OFF.")
                 else:
@@ -533,7 +539,7 @@ class Blinds(Hass):
                             self.new_height = self.params['solar_heating']['solar_heating_height']
                             self.new_angle = self.params['solar_heating']['solar_heating_angle']
                             if self.solar_heating_state == STATE_OFF:
-                                self.solar_heating_state == STATE_ON
+                                self.solar_heating_state = STATE_ON
                                 self.set_state(self.name_solar_heating_status, STATE_ON)
                                 self.debug("Temperature below threshold. Solar heating status ON.")
                     else:
@@ -541,13 +547,13 @@ class Blinds(Hass):
                         self.new_height = self.params['solar_heating']['solar_heating_height']
                         self.new_angle = self.params['solar_heating']['solar_heating_angle']
                         if self.solar_heating_state == STATE_OFF:
-                            self.solar_heating_state == STATE_ON
+                            self.solar_heating_state = STATE_ON
                             self.set_state(self.name_solar_heating_status, STATE_ON)
                             self.debug("Temperature below threshold. Solar heating status ON.")
             else:
                 # chack that status boolean has state off
                 if self.solar_heating_state == STATE_ON:
-                    self.solar_heating_state == STATE_OFF
+                    self.solar_heating_state = STATE_OFF
                     self.set_state(self.name_solar_heating_status, STATE_OFF)
                     self.debug("Solar heating not active. Solar heating status OFF.")
 
@@ -562,7 +568,7 @@ class Blinds(Hass):
 
         # lockout protection - also when window sensor is unavailable activate lockout protection
         if self.params.get("lockout_protection_active") and (self.window_open == WINDOW_OPEN or self.window_open == UNAVAILABLE):
-            if self.current_height > self.calculated_height:
+            if self.current_height > self.new_height:
                 # When new height is lower than actual height, do not change height
                 self.new_height = self.current_height
                 self.debug(f"Lockout protection active. Taking over current height. Current height: {self.current_height}")
@@ -583,27 +589,28 @@ class Blinds(Hass):
     def set_position(self, height, angle):
         """Set cover position and tilt."""
         self.debug(f"set_position called with: {height}, {angle}")
-        #if self.last_height == height and self.last_angle == angle:
-        #    self.debug(f"New positions same like last. Height: {height}, angle: {angle}")
-        #    return
 
         # Only write changes to cover entity when not locked in any way
         if (self.blinds_locked == STATE_OFF
             and self.blinds_locked_external == STATE_OFF
             and self.manipulation_active == STATE_OFF):
+            
             # Check if height changed to actual blinds height respecting tolerance
             self.debug(f"Current positions: height: {self.current_height} angle: {self.current_angle}")
             tolerance_height = self.params['blinds']['height_tolerance']
+            
             if not (self.current_height <= min((height + tolerance_height), 100) and self.current_height >= max((height - tolerance_height), 0)):
                 result = self.call_service("cover/set_cover_position",
                                 entity_id=self.params['entities']['cover'],
                                 position=height)
                 self.debug(f"Changing height to: {height}. Result: {result}")
-                if not result['success']:
-                    self.error(f"Could not set position to height: {height}")
-                else:
+                if result['success']:
                     self.debug(f"Set blinds to height: {height}")
-                    self.last_height = height
+                    # Record automated change details
+                    self.last_automated_change = datetime.now()
+                    self.expected_height = height
+                else:
+                    self.error(f"Could not set position to height: {height}")
 
             tolerance_angle = self.params['blinds']['angle_tolerance']
             if not (self.current_angle <= min((angle + tolerance_angle), 100)  and self.current_angle >= max((angle - tolerance_angle), 0)):
@@ -611,11 +618,14 @@ class Blinds(Hass):
                                 entity_id=self.params['entities']['cover'],
                                 tilt_position=angle)
                 self.debug(f"Changing angle to: {angle}. Result: {result}")
-                if not result['success']:
-                    self.error(f"Could not set position to angle: {angle}")
-                else:
+                if result['success']:
                     self.debug(f"Set blinds to angle: {angle}")
-                    self.last_angle = angle
+                    # Record automated change details
+                    self.last_automated_change = datetime.now()
+                    self.expected_angle = angle
+                else:
+                    self.error(f"Could not set position to angle: {angle}")
+                    
         self.debug("set_position finish")
 
             
@@ -935,7 +945,7 @@ class Blinds(Hass):
                 # Brightness again avove threshold - back to neutral
                 self.debug("Brightness above threshold. Switching from NEUTRAL_TO_DAWN_TIMER back to NEUTRAL")
                 self.timer = None
-                self.blinds_state = self.STATE_NEUTRAL
+                return self.STATE_NEUTRAL
             elif self.is_timer_finished():
                 self.debug("Timer NEUTRAL_TO_DAWN_TIMER finished. Switching to DAWN")
                 self.timer = None
@@ -986,9 +996,6 @@ class Blinds(Hass):
             self.timer = None
             return self.STATE_NEUTRAL
 
-    def handle_state_dawn_horizontal(self):
-        pass
-
     def handle_state_dawn_horizontal_to_neutral_timer(self):
         # Check if brightness is above threshold, then reset timer and switch to "state_horizontal_to_shadow_timer"
         if self.params['dawn_active']:
@@ -1033,6 +1040,7 @@ class Blinds(Hass):
                 return self.params['dawn']['dawn_height'], self.params['dawn']['dawn_angle']
             case _:
                 self.error(f"handle_states: Unknown state: {self.blinds_state}")
+                return self.params['neutral']['neutral_height'], self.params['neutral']['neutral_angle']
 
     def on_sun_change(self, entity, attribute, old, new, kwargs):
         """Stores changes in instance variable."""
@@ -1109,50 +1117,63 @@ class Blinds(Hass):
             self.current_temperature = float(new)
 
     def on_cover_change(self, entity, attribute, old, new, kwargs):
-        # logic for handling changes
-        # self.debug(f"Cover change triggered: {entity=}, {attribute=}, {old=}, {new=}")
         if new is None or new['state'] in ["opening", "closing", UNKNOWN, UNAVAILABLE]:
-            # Filtering these states.
             return
         else:
-            manual_change = False
             self.debug(f"Cover changed: {entity=}, {attribute=}, {old=}, {new=}")
             # Set new values to variables
             self.current_height = new['attributes']['current_position']
             self.current_angle = new['attributes']['current_tilt_position']
 
-            # Check position
+            # Check if values match expected automated change
             tolerance_height = self.params['blinds']['height_tolerance']
-            if self.current_height <= min((self.last_height + tolerance_height), 100) and self.current_height >= max((self.last_height - tolerance_height), 0):
-                self.debug(f"on_cover_change detected expected position in height: {self.current_height}")
-            else:
-                self.debug(f"on_cover_change detected external position change in height: {self.current_height}")
-                self.debug(f"on_cover_change last calculated height: {self.last_height}")
-                manual_change = True
-
-            # Check angle
             tolerance_angle = self.params['blinds']['angle_tolerance']
-            if self.current_angle <= min((self.last_angle + tolerance_angle),100) and self.current_angle >= max((self.last_angle - tolerance_angle),0):
-                self.debug(f"on_cover_change detected expected position in angle: {self.current_angle}")
-            else:
-                self.debug(f"on_cover_change detected external position in angle: {self.current_angle}")
-                self.debug(f"on_cover_change last calculated angle: {self.last_angle}")
-                manual_change = True
+
+            # Check height/position
+            height_matches = (self.expected_height is None or 
+                                (self.current_height <= min((self.expected_height + tolerance_height), 100) and 
+                                self.current_height >= max((self.expected_height - tolerance_height), 0)))
             
-            # Logic when manual change detected - when aleady locked by any other lock no external lock detection
-            if manual_change and self.manipulation_active == STATE_OFF and self.blinds_locked == STATE_OFF:
-                # When not already locked due to external change, lock it and set timer
-                if self.blinds_locked_external == STATE_OFF:
-                    # Update timer
-                    self.blinds_locked_external_till = datetime.now() + timedelta(minutes=self.params['blinds_locked_external_for_min'])
-                    # AFTER timer update, also change state of input_boolean
-                    self.set_state(entity_id=self.name_blinds_locked_external, state=STATE_ON)
-                    # Sync State with HASS
-                    self.blinds_locked_external == self.get_state(entity_id=self.name_blinds_locked_external)
-                    
-                    self.debug(f"External lock timer set to: {self.blinds_locked_external_till}")
-                else:
-                    self.debug(f"Already locked by external change till: {self.blinds_locked_external_till}")
+            # Check angle/tilt
+            angle_matches = (self.expected_angle is None or
+                        (self.current_angle <= min((self.expected_angle + tolerance_angle), 100) and 
+                            self.current_angle >= max((self.expected_angle - tolerance_angle), 0)))
+            
+
+            if height_matches and angle_matches:
+                # Check if the cover change happened in defined time window -> Reset external lock
+                if self.last_automated_change is not None:
+                    time_since_automated = (datetime.now() - self.last_automated_change).total_seconds()
+                    if time_since_automated <= self.automated_change_window:
+                        self.debug("Change matches expected automated change")
+                        # Reset external lock timer
+                        self.blinds_locked_external_till = None
+                        # Check if an maybe existing external lock could be released
+                        self.check_external_lock()
+            else:
+                self.debug("Change doesn't match expected automated change - set external lock")
+                # Logic when manual change detected - when aleady locked by any other lock no external lock detection
+                if self.manipulation_active == STATE_OFF and self.blinds_locked == STATE_OFF:
+                    # When not already locked due to external change, lock it and set timer
+                    if self.blinds_locked_external == STATE_OFF:
+                        # Update timer
+                        self.blinds_locked_external_till = datetime.now() + timedelta(minutes=self.params['blinds_locked_external_for_min'])
+                        # AFTER timer update, also change state of input_boolean
+                        self.set_state(entity_id=self.name_blinds_locked_external, state=STATE_ON)
+                        # Sync State with HASS
+                        self.blinds_locked_external = self.get_state(entity_id=self.name_blinds_locked_external)
+                        
+                        self.debug(f"External lock set to: {self.blinds_locked_external} timer set to: {self.blinds_locked_external_till}")
+                    else:
+                        self.debug(f"Already locked by external change till: {self.blinds_locked_external_till}")
+
+            # Clear automated change tracking if outside window
+            if self.last_automated_change is not None:
+                time_since_automated = (datetime.now() - self.last_automated_change).total_seconds()
+                if time_since_automated > self.automated_change_window:
+                    self.last_automated_change = None
+                    self.expected_height = None
+                    self.expected_angle = None
 
     def save_states_to_file(self):
         """Save current states to JSON file with timestamp."""
