@@ -97,8 +97,8 @@ class Blinds(Hass):
         self.params = self.deep_merge_config(self.DEFAULT_CONFIG, self.args)
 
         # Add new variables for tracking automated changes
-        self.last_automated_change = None
-        self.automated_change_window = 15  # seconds to wait for cover feedback
+        self.automated_change_counter = 0
+        self.max_automated_change_counter = 2  # Number of change position events after a automated change can happen (normally 2 - one event when height was arrived and one when also tilt was set)
         self.expected_height = None 
         self.expected_angle = None
 
@@ -606,8 +606,8 @@ class Blinds(Hass):
                 self.debug(f"Changing height to: {height}. Result: {result}")
                 if result['success']:
                     self.debug(f"Set blinds to height: {height}")
-                    # Record automated change details
-                    self.last_automated_change = datetime.now()
+                    # Record automated change details - set counter to 0
+                    self.automated_change_counter = 0
                     self.expected_height = height
                 else:
                     self.error(f"Could not set position to height: {height}")
@@ -620,8 +620,8 @@ class Blinds(Hass):
                 self.debug(f"Changing angle to: {angle}. Result: {result}")
                 if result['success']:
                     self.debug(f"Set blinds to angle: {angle}")
-                    # Record automated change details
-                    self.last_automated_change = datetime.now()
+                    # Record automated change details - set counter to 0
+                    self.automated_change_counter = 0
                     self.expected_angle = angle
                 else:
                     self.error(f"Could not set position to angle: {angle}")
@@ -1121,6 +1121,9 @@ class Blinds(Hass):
             return
         else:
             self.debug(f"Cover changed: {entity=}, {attribute=}, {old=}, {new=}")
+            # Raise self.automated_change_counter by one
+            self.automated_change_counter += 1
+
             # Set new values to variables
             self.current_height = new['attributes']['current_position']
             self.current_angle = new['attributes']['current_tilt_position']
@@ -1141,21 +1144,21 @@ class Blinds(Hass):
             
 
             if height_matches and angle_matches:
-                # Check if the cover change happened in defined time window -> Reset external lock
-                if self.last_automated_change is not None:
-                    time_since_automated = (datetime.now() - self.last_automated_change).total_seconds()
-                    if time_since_automated <= self.automated_change_window:
-                        self.debug("Change matches expected automated change")
-                        # Reset external lock timer
-                        self.blinds_locked_external_till = None
-                        # Check if an maybe existing external lock could be released
-                        self.check_external_lock()
+                # Check if the curent event could be related to an automated cover change
+                if self.automated_change_counter <= self.max_automated_change_counter:
+                    self.debug("Change matches expected automated change")
+                    # Reset external lock timer
+                    self.blinds_locked_external_till = None
+                    # Check if an maybe existing external lock could be released
+                    self.check_external_lock()
             else:
                 self.debug("Change doesn't match expected automated change - set external lock")
                 # Logic when manual change detected - when aleady locked by any other lock no external lock detection
                 if self.manipulation_active == STATE_OFF and self.blinds_locked == STATE_OFF:
                     # When not already locked due to external change, lock it and set timer
                     if self.blinds_locked_external == STATE_OFF:
+                        # Set lock directly - communication with HASS maybe take some time and lead to issues
+                        self.blinds_locked_external = STATE_ON
                         # Update timer
                         self.blinds_locked_external_till = datetime.now() + timedelta(minutes=self.params['blinds_locked_external_for_min'])
                         # AFTER timer update, also change state of input_boolean
@@ -1168,12 +1171,9 @@ class Blinds(Hass):
                         self.debug(f"Already locked by external change till: {self.blinds_locked_external_till}")
 
             # Clear automated change tracking if outside window
-            if self.last_automated_change is not None:
-                time_since_automated = (datetime.now() - self.last_automated_change).total_seconds()
-                if time_since_automated > self.automated_change_window:
-                    self.last_automated_change = None
-                    self.expected_height = None
-                    self.expected_angle = None
+            if self.automated_change_counter > self.max_automated_change_counter:
+                self.expected_height = None
+                self.expected_angle = None
 
     def save_states_to_file(self):
         """Save current states to JSON file with timestamp."""
