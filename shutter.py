@@ -5,7 +5,7 @@ import time
 import json
 from datetime import datetime, timedelta
 from time import time
-from decimal import Decimal, ROUND_HALF_EVEN
+# from decimal import Decimal, ROUND_HALF_EVEN
 from appdaemon.plugins.hass.hassapi import Hass
 from helpers.entity_collector import EntityCollector
 
@@ -83,6 +83,14 @@ class Shutter(Hass):
         # Merge default config with provided args (apps.yaml)
         self.params = self.deep_merge_config(self.DEFAULT_CONFIG, self.args)
 
+        # Attribute if blinds is moving
+        self.moving = False
+
+        # Add new variables for tracking automated changes
+        self.automated_change_counter = -1
+        self.max_automated_change_counter = 5  # Number of change position events after a automated change can happen (normally 2 - one event when height was arrived and one when also tilt was set)
+        self.expected_height = None
+
         # Validate config
         self.validate_config()
 
@@ -99,7 +107,7 @@ class Shutter(Hass):
 
         # Read actual values on initilization
         self.current_height = self.get_state(self.params['entities']['cover'], attribute='current_position')
-        self.last_height = self.current_height
+        self.expected_height = self.current_height
         self.debug(f"Current height: {self.current_height}")
         
         # Read configured sensors.
@@ -158,7 +166,7 @@ class Shutter(Hass):
             self.listen_state(self.on_window_change, self.params['entities']['window_sensor'])
 
         # Listen to current temperature
-        if self.params.get('solar_heating_available'):
+        if self.params['entities'].get('climate'):
             self.listen_state(self.on_temperature_change, self.params['entities']['climate'], attribute='current_temperature')
 
         # Listen to cover changes to detect manual changes
@@ -190,114 +198,113 @@ class Shutter(Hass):
             self.brightness_dawn = int(float(self.get_state(self.params['entities']['brightness_dawn'])))
         if self.params.get('entities', {}).get("window_sensor"):
             self.window_open = self.get_state(self.params['entities']['window_sensor'])
-        if self.params.get('solar_heating_available'):
+        if self.params['entities'].get('climate'):
             self.current_temperature = self.get_state(self.params['entities'].get('climate'), attribute="current_temperature")
         if self.params['shadow'].get('shadow_brightness_threshold_entity'):
             self.sunshine_brightness_threshold = int(float(self.get_state(self.params['shadow'].get('shadow_brightness_threshold_entity'))))
 
     def validate_config(self):
         """Validate configuration and log missing entries."""
-        result = True
+        valid = True
 
         if not self.params.get('unique_id'):
-            self.error(f"Configuration: Missing mandatory 'unique_id' (without spaces)")
+            self.log(f"Configuration: Missing mandatory 'unique_id' (without spaces)")
 
         if not self.params.get('entities'):
-            self.error(f"Configuration: Missing mandatory 'entities' settings.")
+            self.log(f"Configuration: Missing mandatory 'entities' settings.")
         else:
             if not self.params['entities'].get('cover'):
-                self.error(f"Missing mandatory configuration: entities.cover")
-                result: False
+                self.log(f"Missing mandatory configuration: entities.cover")
+                result = False
             elif not self.entity_exists(self.params['entities']['cover']):
-                self.error(f"Configuration entity entities.cover: {self.params['entities']['cover']} could not be found in HASS")
-                result: False
+                self.log(f"Configuration entity entities.cover: {self.params['entities']['cover']} could not be found in HASS")
+                result = False
                 
             if not self.params['entities'].get('brightness_shadow'):
-                self.error(f"Missing mandatory configuration: entities.brightness_shadow")
-                result: False
+                self.log(f"Missing mandatory configuration: entities.brightness_shadow")
+                valid = False
             elif not self.entity_exists(self.params['entities']['brightness_shadow']):
-                self.error(f"Configuration entity entities.brightness_shadow: {self.params['entities']['brightness_shadow']} could not be found in HASS")
-                result: False
+                self.log(f"Configuration entity entities.brightness_shadow: {self.params['entities']['brightness_shadow']} could not be found in HASS")
+                valid = False
 
             if self.params['entities'].get('brightness_dawn'):
                 if not self.entity_exists(self.params.get('entities', {}).get('brightness_dawn')):
-                    self.error(f"Configuration entity entities.brightness_dawn: {self.params.get('entities', {}).get('brightness_dawn')} could not be found in HASS")
-                    result: False
+                    self.log(f"Configuration entity entities.brightness_dawn: {self.params.get('entities', {}).get('brightness_dawn')} could not be found in HASS")
+                    valid = False
 
             if self.params.get('lockout_protection_active') or self.params.get('ventilation_active'):
                 if not self.entity_exists(self.params.get('entities', {}).get('window_sensor')):
-                    self.error(f"Configuration entity entities.window_sensor: {self.params.get('entities', {}).get('window_sensor')} could not be found in HASS")
-                    result: False
+                    self.log(f"Configuration entity entities.window_sensor: {self.params.get('entities', {}).get('window_sensor')} could not be found in HASS")
+                    valid = False
 
             if self.params.get('solar_heating_available'):
                 if not self.entity_exists(self.params.get('entities', {}).get('climate')):
-                    self.error(f"Configuration entity entities.climate: {self.params.get('entities', {}).get('climate')} could not be found in HASS")
-                    result: False
+                    self.log(f"Configuration entity entities.climate: {self.params.get('entities', {}).get('climate')} could not be found in HASS")
+                    valid = False
 
         if self.params['facade']['min_elevation'] >= self.params['facade']['max_elevation']:
-            self.error("Configuration error min_elevation is greater or equal max_elevation. Makes no sense.")
-            result: False
+            self.log("Configuration error min_elevation is greater or equal max_elevation. Makes no sense.")
+            valid = False
 
         if not self.params.get('facade'):
-            self.error(f"Configuration: Missing mandatory 'facade' settings.")
+            self.log(f"Configuration: Missing mandatory 'facade' settings.")
         else:
             if self.params.get('facade', {}).get('facade_angle') is None:
-                self.error("Config entry facade.facade_angle is missing")
+                self.log("Config entry facade.facade_angle is missing")
             elif not type(self.params['facade']['facade_angle']) == int:
-                self.error("facade.facade_angle has to of type int")
+                self.log("facade.facade_angle has to of type int")
 
             if self.params.get('facade', {}).get('facade_offset_entry') is None:
-                self.error("Config entry facade.facade_offset_entry is missing")
-                result = False
+                self.log("Config entry facade.facade_offset_entry is missing")
+                valid = False
             elif not type(self.params['facade']['facade_offset_entry']) == int:
-                self.error("facade.facade_offset_entry has to of type int")
-                result = False
+                self.log("facade.facade_offset_entry has to of type int")
+                valid = False
             else:
                 offset_entry = self.params['facade']['facade_offset_entry']
-        
+
             if self.params.get('facade', {}).get('facade_offset_exit') is None:
-                self.error("Config entry facade.facade_offset_exit is missing")
-                result = False
+                self.log("Config entry facade.facade_offset_exit is missing")
+                valid = False
             elif not type(self.params['facade']['facade_offset_exit']) == int:
-                self.error("facade.facade_offset_exit has to of type int")
-                result = False
+                self.log("facade.facade_offset_exit has to of type int")
+                valid = False
             else:
                 if offset_entry and offset_entry >= self.params['facade']['facade_offset_exit']:
-                    self.error("facade.facade_offset_entry has to be lower than facade.facade_offset_exit")
-                    result = False
+                    self.log("facade.facade_offset_entry has to be lower than facade.facade_offset_exit")
+                    valid = False
 
         if self.params.get("ventilation_active"):
             if self.params['entities'].get('window_sensor') is None:
-                self.error("Ventilation configured, but entities.window_sensor missing")
-                result = False
+                self.log("Ventilation configured, but entities.window_sensor missing")
+                valid = False
             if self.params['ventilation'].get('ventilation_height'):
                 if not type(self.params.get('ventilation', {}).get('ventilation_height')) == int:
-                    self.error("ventilation.ventilation_height has to be False or of type int")
+                    self.log("ventilation.ventilation_height has to be False or of type int")
+                    valid = False
 
         if self.params.get("lockout_protection_active"):
             if self.params['entities'].get('window_sensor') is None:
-                self.error("Ventilation configured, but entities.window_sensor missing")
-                result = False
+                self.log("Ventilation configured, but entities.window_sensor missing")
+                valid = False
 
         if self.params.get('solar_heating_available'):
             if self.params['entities'].get('climate') is None:
-                self.error("Solar heating configured, but entities.climate missing")
-                result = False
+                self.log("Solar heating configured, but entities.climate missing")
+                valid = False
             if not self.params.get('solar_heating'):
-                self.error("solar_heating branch has to be defined in config when solar_heating_available is True")
+                self.log("solar_heating branch has to be defined in config when solar_heating_available is True")
+                valid = False
             if self.params['solar_heating'].get('solar_heating_temperature'):
                 if not (type(self.params['solar_heating'].get('solar_heating_temperature')) == float or
                     type(self.params['solar_heating'].get('solar_heating_temperature')) == int):
-                    self.error("solar_heating.solar_heating_temperature has to be of type float or int")
-                    result = False
+                    self.log("solar_heating.solar_heating_temperature has to be of type float or int")
+                    valid = False
             if not type(self.params['solar_heating'].get('solar_heating_height')) == int:
-                self.error("solar_heating.solar_heating_height has to be of type int")
-                result = False
-            if not type(self.params['solar_heating'].get('solar_heating_angle')) == int:
-                self.error("solar_heating.solar_heating_angle has to be of type int")
-                result = False
+                self.log("solar_heating.solar_heating_height has to be of type int")
+                valid = False
 
-        if result:
+        if valid:
             self.debug("Configuration validation successful")
         else:
             raise ValueError("Configuration validation failed. Check error log.")
@@ -478,7 +485,10 @@ class Shutter(Hass):
         if self.params.get("ventilation_active"):
             if self.window_open == WINDOW_OPEN:
                 if  type(self.params['ventilation'].get("ventilation_height")) == int:
-                    self.new_height = self.params['ventilation'].get("ventilation_height")
+                    if self.current_height < self.params['ventilation'].get("ventilation_height"):
+                        # Only open shutter when its more closed than ventialtion height
+                        self.debug(f"Ventilation activated: Current height: {self.current_height} ventialtion height: {self.params['ventilation'].get('ventilation_height')}")
+                        self.new_height = self.params['ventilation'].get("ventilation_height")
 
         # Solar heat | for comparison of two floats the comparison issue is fine and we don't care about small differences
         if self.params.get("solar_heating_available"):
@@ -488,7 +498,7 @@ class Shutter(Hass):
                     self.hysterese_reached = True
                     # Update status
                     if self.solar_heating_state == STATE_ON:
-                        self.solar_heating_state == STATE_OFF
+                        self.solar_heating_state = STATE_OFF
                         self.set_state(self.name_solar_heating_status, STATE_OFF)
                         self.debug("Temperature reached and above threshold. Solar heating status OFF.")
                 else:
@@ -500,20 +510,20 @@ class Shutter(Hass):
                             self.hysterese_reached = False
                             self.new_height = self.params['solar_heating']['solar_heating_height']
                             if self.solar_heating_state == STATE_OFF:
-                                self.solar_heating_state == STATE_ON
+                                self.solar_heating_state = STATE_ON
                                 self.set_state(self.name_solar_heating_status, STATE_ON)
                                 self.debug("Temperature below threshold. Solar heating status ON.")
                     else:
                         # Hysterese not reached, so do solar heating
                         self.new_height = self.params['solar_heating']['solar_heating_height']
                         if self.solar_heating_state == STATE_OFF:
-                            self.solar_heating_state == STATE_ON
+                            self.solar_heating_state = STATE_ON
                             self.set_state(self.name_solar_heating_status, STATE_ON)
                             self.debug("Temperature below threshold. Solar heating status ON.")
             else:
                 # chack that status boolean has state off
                 if self.solar_heating_state == STATE_ON:
-                    self.solar_heating_state == STATE_OFF
+                    self.solar_heating_state = STATE_OFF
                     self.set_state(self.name_solar_heating_status, STATE_OFF)
                     self.debug("Solar heating not active. Solar heating status OFF.")
 
@@ -528,40 +538,60 @@ class Shutter(Hass):
 
         # lockout protection - also when window sensor is unavailable activate lockout protection
         if self.params.get("lockout_protection_active") and (self.window_open == WINDOW_OPEN or self.window_open == UNAVAILABLE):
-            if self.current_height > self.calculated_height:
+            if self.current_height > self.new_height:
                 # When new height is lower than actual height, do not change height
                 self.new_height = self.current_height
                 self.debug(f"Lockout protection active. Taking over current height. Current height: {self.current_height}")
 
         self.debug(f"New calculated height: {self.new_height}")
 
-        # When everything was checked, move shutter
-        self.set_position(self.new_height)
+        # When everything was checked, move shutter - when not already moving
+        if self.moving:
+            self.debug("Shutter already moving - don't set new position")
+        else:
+            self.set_position(self.new_height)
 
         # Save state
         self.save_states_to_file()
 
     def set_position(self, height):
-        """Set cover position and tilt."""
+        """Set cover position."""
+        if not isinstance(height, (int, float)) or height < 0 or height > 100:
+            self.error(f"Invalid height value: {height}")
+            return
+        
         self.debug(f"set_position called with: {height}")
 
-        # Only write changes to cover entity when not locked in any way
-        if (self.shutter_locked == STATE_OFF
-            and self.shutter_locked_external == STATE_OFF
-            and self.manipulation_active == STATE_OFF):
-            # Check if height changed to actual shutter height respecting tolerance
-            self.debug(f"Current positions: height: {self.current_height}")
-            tolerance_height = self.params['move_constraints']['height_tolerance']
-            if not (self.current_height <= min((height + tolerance_height), 100) and self.current_height >= max((height - tolerance_height), 0)):
-                result = self.call_service("cover/set_cover_position",
-                                entity_id=self.params['entities']['cover'],
-                                position=height)
-                self.debug(f"Changing height to: {height}. Result: {result}")
-                if not result['success']:
-                    self.error(f"Could not set position to height: {height}")
-                else:
-                    self.debug(f"Set shutter to height: {height}")
-                    self.last_height = height
+        if self.moving:
+            self.debug("Shutter already moving - don't set new position")
+            return
+        
+        # Automated change counter reflects how many state changes happened since last blinds change
+        # When this value equals 0, the logic changed position but no feedback from device has arrived till now (blinds still moving)
+        # Only when last change was finished, a new change should be sent
+        if self.automated_change_counter != 0:
+
+            # Only write changes to cover entity when not locked in any way
+            if (self.shutter_locked == STATE_OFF
+                and self.shutter_locked_external == STATE_OFF
+                and self.manipulation_active == STATE_OFF):
+                # Check if height changed to actual shutter height respecting tolerance
+                self.debug(f"Current positions: height: {self.current_height}")
+                tolerance_height = self.params['move_constraints']['height_tolerance']
+                if not (self.current_height <= min((height + tolerance_height), 100) and self.current_height >= max((height - tolerance_height), 0)):
+                    result = self.call_service("cover/set_cover_position",
+                                    entity_id=self.params['entities']['cover'],
+                                    position=height)
+                    self.debug(f"Changing height to: {height}. Result: {result}")
+                    if not result['success']:
+                        self.error(f"Could not set position to height: {height}")
+                    else:
+                        self.debug(f"Set shutter to height: {height}")
+                        self.automated_change_counter = 0
+                        self.expected_height = height
+
+        else:
+            self.debug(f"Last position change still ongoing.")
 
         self.debug("set_position finish")
 
@@ -607,6 +637,8 @@ class Shutter(Hass):
 
     def calculate_height(self):
         """Calculate shutter height for light strip."""
+        if not self.params.get('shadow', {}).get('light_strip'):
+            return 0
         if self.params['shadow']['light_strip'] == 0:
             return 0 # Fully closed when no light strip is defined
             
@@ -676,7 +708,7 @@ class Shutter(Hass):
             if self.brightness_shadow < self.get_shadow_brightness_threshold():
                 # Brightness below threshold - start timer for moving to horizontal
                 self.debug("Brightness below threshold. Switching from SHADOW to SHADOW_TO_NEUTRAL_TIMER")
-                self.timer = datetime.now() + timedelta(seconds = int(self.params['delays']['shadow_to_horizontal_delay']))
+                self.timer = datetime.now() + timedelta(seconds = int(self.params['delays']['shadow_to_neutral_delay']))
                 self.debug(f"Timer finish at: {self.timer}")
                 return self.STATE_SHADOW_TO_NEUTRAL_TIMER
             else:
@@ -885,36 +917,52 @@ class Shutter(Hass):
         # self.debug(f"Cover change triggered: {entity=}, {attribute=}, {old=}, {new=}")
         if new is None or new['state'] in ["opening", "closing", UNKNOWN, UNAVAILABLE]:
             # Filtering these states. Maybe it's a manual trigger or triggered by this logic
+            self.moving = True
             return
         else:
-            manual_change = False
+            self.moving = False
             self.debug(f"Cover changed: {entity=}, {attribute=}, {old=}, {new=}")
+            # Raise self.automated_change_counter by one
+            self.automated_change_counter += 1
+            self.debug(f"Automated Change Counter: {self.automated_change_counter}")
+
             # Set new values to variables
             self.current_height = new['attributes']['current_position']
 
             # Check position
             tolerance_height = self.params['move_constraints']['height_tolerance']
-            if self.current_height <= min((self.last_height + tolerance_height), 100) and self.current_height >= max((self.last_height - tolerance_height), 0):
-                self.debug(f"on_cover_change detected expected position in height: {self.current_height}")
+
+            # Check height/position
+            height_matches = (self.expected_height is None or 
+                                (self.current_height <= min((self.expected_height + tolerance_height), 100) and 
+                                self.current_height >= max((self.expected_height - tolerance_height), 0)))
+
+            if height_matches:
+                self.debug("Change matches expected automated change")
+                # Check if the curent event could be related to an automated cover change
+                if self.automated_change_counter <= self.max_automated_change_counter:
+                    # Reset external lock timer
+                    self.shutter_locked_external_till = None
+                    # Check if an maybe existing external lock could be released
+                    self.check_external_lock()
             else:
-                self.debug(f"on_cover_change detected external position change in height: {self.current_height}")
-                self.debug(f"on_cover_change last calculated height: {self.last_height}")
-                manual_change = True
-            
-            # Logic when manual change detected - when aleady locked by any other lock no external lock detection
-            if manual_change and self.manipulation_active == STATE_OFF and self.shutter_locked == STATE_OFF:
-                # When not already locked due to external change, lock it and set timer
-                if self.shutter_locked_external == STATE_OFF:
-                    # Update timer
-                    self.shutter_locked_external_till = datetime.now() + timedelta(minutes=self.params['shutter_locked_external_for_min'])
-                    # AFTER timer update, also change state of input_boolean
-                    self.set_state(entity_id=self.name_shutter_locked_external, state=STATE_ON)
-                    # Sync state with HASS
-                    self.shutter_locked_external == self.get_state(entity_id=self.name_shutter_locked_external)
-                    
-                    self.debug(f"External lock timer set to: {self.shutter_locked_external_till}")
-                else:
-                    self.debug(f"Already locked by external change till: {self.shutter_locked_external_till}")
+                self.debug("Change doesn't match expected automated change - set external lock")
+                # Logic when manual change detected - when aleady locked by any other lock no external lock detection
+                if self.manipulation_active == STATE_OFF and self.shutter_locked == STATE_OFF:
+                    # When not already locked due to external change, lock it and set timer
+                    if self.shutter_locked_external == STATE_OFF:
+                        # Set lock directly - communication with HASS maybe take some time and lead to issues
+                        self.shutter_locked_external = STATE_ON
+                        # Update timer
+                        self.shutter_locked_external_till = datetime.now() + timedelta(minutes=self.params['shutter_locked_external_for_min'])
+                        # AFTER timer update, also change state of input_boolean
+                        self.set_state(entity_id=self.name_shutter_locked_external, state=STATE_ON)
+                        # Sync State with HASS
+                        self.shutter_locked_external = self.get_state(entity_id=self.name_shutter_locked_external)
+                        
+                        self.debug(f"External lock set to: {self.shutter_locked_external} timer set to: {self.shutter_locked_external_till}")
+                    else:
+                        self.debug(f"Already locked by external change till: {self.shutter_locked_external_till}")
 
     def save_states_to_file(self):
         """Save current states to JSON file with timestamp."""

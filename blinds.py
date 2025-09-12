@@ -96,9 +96,12 @@ class Blinds(Hass):
         # Merge default config with provided args (apps.yaml)
         self.params = self.deep_merge_config(self.DEFAULT_CONFIG, self.args)
 
+        # Attribute if blinds is moving
+        self.moving = False
+
         # Add new variables for tracking automated changes
-        self.automated_change_counter = 0
-        self.max_automated_change_counter = 2  # Number of change position events after a automated change can happen (normally 2 - one event when height was arrived and one when also tilt was set)
+        self.automated_change_counter = -1
+        self.max_automated_change_counter = 5  # Number of change position events after a automated change can happen (normally 2 - one event when height was arrived and one when also tilt was set)
         self.expected_height = None 
         self.expected_angle = None
 
@@ -107,7 +110,6 @@ class Blinds(Hass):
 
         # Initialize States beginning from Neutral
         self.blinds_state = self.STATE_NEUTRAL
-        self.debug(f"Initialized state: {self.blinds_state}")
         self.blinds_locked_external_till = None
         self.timer = None
         if self.params.get('solar_heating_available'):
@@ -115,6 +117,9 @@ class Blinds(Hass):
 
         # Check if we can load a previous stored state
         self.load_state_from_file()
+
+        # After load from maybe existing file was done, state is finally initialized
+        self.debug(f"Initialized state: {self.blinds_state}")
 
         # Read actual values on initilization
         self.current_height = self.get_state(self.params['entities']['cover'], attribute='current_position')
@@ -181,7 +186,7 @@ class Blinds(Hass):
             self.listen_state(self.on_window_change, self.params['entities']['window_sensor'])
 
         # Listen to current temperature
-        if self.params.get('solar_heating_available'):
+        if self.params['entities'].get('climate'):
             self.listen_state(self.on_temperature_change, self.params['entities']['climate'], attribute='current_temperature')
 
         # Listen to cover changes to detect manual changes
@@ -213,7 +218,7 @@ class Blinds(Hass):
             self.brightness_dawn = int(float(self.get_state(self.params['entities']['brightness_dawn'])))
         if self.params.get('entities', {}).get("window_sensor"):
             self.window_open = self.get_state(self.params['entities']['window_sensor'])
-        if self.params.get('solar_heating_available'):
+        if self.params['entities'].get('climate'):
             self.current_temperature = self.get_state(self.params['entities'].get('climate'), attribute="current_temperature")
         if self.params['shadow'].get('shadow_brightness_threshold_entity'):
             self.sunshine_brightness_threshold = int(float(self.get_state(self.params['shadow'].get('shadow_brightness_threshold_entity'))))
@@ -223,108 +228,113 @@ class Blinds(Hass):
         result = True
 
         if not self.params.get('unique_id'):
-            self.error(f"Configuration: Missing mandatory 'unique_id' (without spaces)")
+            self.log(f"Configuration: Missing mandatory 'unique_id' (without spaces)")
 
         if not self.params.get('entities'):
-            self.error(f"Configuration: Missing mandatory 'entities' settings.")
+            self.log(f"Configuration: Missing mandatory 'entities' settings.")
         else:
             if not self.params['entities'].get('cover'):
-                self.error(f"Missing mandatory configuration: entities.cover")
+                self.log(f"Missing mandatory configuration: entities.cover")
                 result = False
             elif not self.entity_exists(self.params['entities']['cover']):
-                self.error(f"Configuration entity entities.cover: {self.params['entities']['cover']} could not be found in HASS")
+                self.log(f"Configuration entity entities.cover: {self.params['entities']['cover']} could not be found in HASS")
                 result = False
                 
             if not self.params['entities'].get('brightness_shadow'):
-                self.error(f"Missing mandatory configuration: entities.brightness_shadow")
+                self.log(f"Missing mandatory configuration: entities.brightness_shadow")
                 result = False
             elif not self.entity_exists(self.params['entities']['brightness_shadow']):
-                self.error(f"Configuration entity entities.brightness_shadow: {self.params['entities']['brightness_shadow']} could not be found in HASS")
+                self.log(f"Configuration entity entities.brightness_shadow: {self.params['entities']['brightness_shadow']} could not be found in HASS")
                 result = False
 
             if self.params['entities'].get('brightness_dawn'):
                 if not self.entity_exists(self.params.get('entities', {}).get('brightness_dawn')):
-                    self.error(f"Configuration entity entities.brightness_dawn: {self.params.get('entities', {}).get('brightness_dawn')} could not be found in HASS")
+                    self.log(f"Configuration entity entities.brightness_dawn: {self.params.get('entities', {}).get('brightness_dawn')} could not be found in HASS")
                     result = False
 
             if self.params.get('lockout_protection_active') or self.params.get('ventilation_active'):
                 if not self.entity_exists(self.params.get('entities', {}).get('window_sensor')):
-                    self.error(f"Configuration entity entities.window_sensor: {self.params.get('entities', {}).get('window_sensor')} could not be found in HASS")
+                    self.log(f"Configuration entity entities.window_sensor: {self.params.get('entities', {}).get('window_sensor')} could not be found in HASS")
                     result = False
 
             if self.params.get('solar_heating_available'):
                 if not self.entity_exists(self.params.get('entities', {}).get('climate')):
-                    self.error(f"Configuration entity entities.climate: {self.params.get('entities', {}).get('climate')} could not be found in HASS")
+                    self.log(f"Configuration entity entities.climate: {self.params.get('entities', {}).get('climate')} could not be found in HASS")
+                    result = False
+        
+        if self.params.get('comfort_temperature'):
+            if not self.entity_exists(self.params.get('entities', {}).get('climate')):
+                    self.log(f"Configuration entity entities.climate: {self.params.get('entities', {}).get('climate')} could not be found in HASS")
                     result = False
 
         if self.params['facade']['min_elevation'] >= self.params['facade']['max_elevation']:
-            self.error("Configuration error min_elevation is greater or equal max_elevation. Makes no sense.")
+            self.log("Configuration error min_elevation is greater or equal max_elevation. Makes no sense.")
             result = False
 
         if self.params['move_contraints']['min_angle'] >= self.params['move_contraints']['max_angle']:
-            self.error("Configuration error min_angle is greater or equal max_angle. Makes no sense.")
+            self.log("Configuration error min_angle is greater or equal max_angle. Makes no sense.")
             result = False
 
         if not self.params.get('facade'):
-            self.error(f"Configuration: Missing mandatory 'facade' settings.")
+            self.log(f"Configuration: Missing mandatory 'facade' settings.")
         else:
             if self.params.get('facade', {}).get('facade_angle') is None:
-                self.error("Config entry facade.facade_angle is missing")
+                self.log("Config entry facade.facade_angle is missing")
             elif not type(self.params['facade']['facade_angle']) == int:
-                self.error("facade.facade_angle has to of type int")
+                self.log("facade.facade_angle has to of type int")
 
             if self.params.get('facade', {}).get('facade_offset_entry') is None:
-                self.error("Config entry facade.facade_offset_entry is missing")
+                self.log("Config entry facade.facade_offset_entry is missing")
                 result = False
             elif not type(self.params['facade']['facade_offset_entry']) == int:
-                self.error("facade.facade_offset_entry has to of type int")
+                self.log("facade.facade_offset_entry has to of type int")
                 result = False
             else:
                 offset_entry = self.params['facade']['facade_offset_entry']
-        
+
             if self.params.get('facade', {}).get('facade_offset_exit') is None:
-                self.error("Config entry facade.facade_offset_exit is missing")
+                self.log("Config entry facade.facade_offset_exit is missing")
                 result = False
             elif not type(self.params['facade']['facade_offset_exit']) == int:
-                self.error("facade.facade_offset_exit has to of type int")
+                self.log("facade.facade_offset_exit has to of type int")
                 result = False
             else:
                 if offset_entry and offset_entry >= self.params['facade']['facade_offset_exit']:
-                    self.error("facade.facade_offset_entry has to be lower than facade.facade_offset_exit")
+                    self.log("facade.facade_offset_entry has to be lower than facade.facade_offset_exit")
                     result = False
 
         if self.params.get("ventilation_active"):
             if self.params['entities'].get('window_sensor') is None:
-                self.error("Ventilation configured, but entities.window_sensor missing")
+                self.log("Ventilation configured, but entities.window_sensor missing")
                 result = False
             if self.params['ventilation'].get('ventilation_height'):
                 if not type(self.params.get('ventilation', {}).get('ventilation_height')) == int:
-                    self.error("ventilation.ventilation_height has to be False or of type int")
+                    self.log("ventilation.ventilation_height has to be False or of type int")
             if self.params['ventilation'].get('ventilation_angle'):
                 if not type(self.params['ventilation'].get('ventilation_angle')) == int:
-                    self.error("ventilation.ventilation_angle has to be False or of type int")
+                    self.log("ventilation.ventilation_angle has to be False or of type int")
 
         if self.params.get("lockout_protection_active"):
             if self.params['entities'].get('window_sensor') is None:
-                self.error("Ventilation configured, but entities.window_sensor missing")
+                self.log("Ventilation configured, but entities.window_sensor missing")
                 result = False
 
         if self.params.get('solar_heating_available'):
             if self.params['entities'].get('climate') is None:
-                self.error("Solar heating configured, but entities.climate missing")
+                self.log("Solar heating configured, but entities.climate missing")
                 result = False
             if not self.params.get('solar_heating'):
-                self.error("solar_heating branch has to be defined in config when solar_heating_available is True")
+                self.log("solar_heating branch has to be defined in config when solar_heating_available is True")
             if self.params['solar_heating'].get('solar_heating_temperature'):
                 if not (type(self.params['solar_heating'].get('solar_heating_temperature')) == float or
                     type(self.params['solar_heating'].get('solar_heating_temperature')) == int):
-                    self.error("solar_heating.solar_heating_temperature has to be of type float or int")
+                    self.log("solar_heating.solar_heating_temperature has to be of type float or int")
                     result = False
             if not type(self.params['solar_heating'].get('solar_heating_height')) == int:
-                self.error("solar_heating.solar_heating_height has to be of type int")
+                self.log("solar_heating.solar_heating_height has to be of type int")
                 result = False
             if not type(self.params['solar_heating'].get('solar_heating_angle')) == int:
-                self.error("solar_heating.solar_heating_angle has to be of type int")
+                self.log("solar_heating.solar_heating_angle has to be of type int")
                 result = False
 
         if result:
@@ -517,6 +527,7 @@ class Blinds(Hass):
                     self.new_height = self.params['ventilation'].get("ventilation_height")
                 if type(self.params['ventilation'].get("ventilation_angle")) == int:
                     self.new_angle = self.params['ventilation'].get("ventilation_angle")
+                self.debug("Window open. Overwrite positions with ventilation settings.")
 
         # Solar heat | for comparison of two floats the comparison issue is fine and we don't care about small differences
         if self.params.get("solar_heating_available"):
@@ -578,53 +589,71 @@ class Blinds(Hass):
             # When blinds is almost open, don't adjust angle and leave open
             self.new_angle = 100
 
-        self.debug(f"New calculated height: {self.new_height} angle: {self.new_angle}")
-
-        # When everything was checked, move blinds
-        self.set_position(self.new_height, self.new_angle)
+        # When everything was checked, move blinds - when not already moving
+        if self.moving:
+            self.debug("Blinds already moving - don't set new position")
+        else:
+            self.set_position(self.new_height, self.new_angle)
 
         # Save state
         self.save_states_to_file()
 
     def set_position(self, height, angle):
         """Set cover position and tilt."""
+        if not isinstance(height, (int, float)) or height < 0 or height > 100:
+            self.error(f"Invalid height value: {height}")
+            return
+        if not isinstance(angle, (int, float)) or angle < 0 or angle > 100:
+            self.error(f"Invalid angle value: {angle}")
+            return
+
         self.debug(f"set_position called with: {height}, {angle}")
 
-        # Only write changes to cover entity when not locked in any way
-        if (self.blinds_locked == STATE_OFF
-            and self.blinds_locked_external == STATE_OFF
-            and self.manipulation_active == STATE_OFF):
-            
-            # Check if height changed to actual blinds height respecting tolerance
-            self.debug(f"Current positions: height: {self.current_height} angle: {self.current_angle}")
-            tolerance_height = self.params['blinds']['height_tolerance']
-            
-            if not (self.current_height <= min((height + tolerance_height), 100) and self.current_height >= max((height - tolerance_height), 0)):
-                result = self.call_service("cover/set_cover_position",
-                                entity_id=self.params['entities']['cover'],
-                                position=height)
-                self.debug(f"Changing height to: {height}. Result: {result}")
-                if result['success']:
-                    self.debug(f"Set blinds to height: {height}")
-                    # Record automated change details - set counter to 0
-                    self.automated_change_counter = 0
-                    self.expected_height = height
-                else:
-                    self.error(f"Could not set position to height: {height}")
+        # Automated change counter reflects how many state changes happened since last blinds change
+        # When this value equals 0, the logic changed position but no feedback from device has arrived till now (blinds still moving)
+        # Only when last change was finished, a new change should be sent
+        if self.automated_change_counter != 0:
+            # Only write changes to cover entity when not locked in any way
+            if (self.blinds_locked == STATE_OFF
+                and self.blinds_locked_external == STATE_OFF
+                and self.manipulation_active == STATE_OFF):
+                
+                height_changed = False
+                
+                # Check if height changed to actual blinds height respecting tolerance
+                self.debug(f"Current positions: height: {self.current_height} angle: {self.current_angle}")
+                tolerance_height = self.params['blinds']['height_tolerance']
+                if not (self.current_height <= min((height + tolerance_height), 100) and self.current_height >= max((height - tolerance_height), 0)):
+                    result = self.call_service("cover/set_cover_position",
+                                    entity_id=self.params['entities']['cover'],
+                                    position=height)
+                    self.debug(f"Changing height to: {height}. Result: {result}")
+                    if result['success']:
+                        self.debug(f"Set blinds to height: {height}")
+                        # Record automated change details - set counter to 0
+                        self.automated_change_counter = 0
+                        self.expected_height = height
+                        height_changed = True
+                    else:
+                        self.error(f"Could not set position to height: {height}")
 
-            tolerance_angle = self.params['blinds']['angle_tolerance']
-            if not (self.current_angle <= min((angle + tolerance_angle), 100)  and self.current_angle >= max((angle - tolerance_angle), 0)):
-                result = self.call_service("cover/set_cover_tilt_position",
-                                entity_id=self.params['entities']['cover'],
-                                tilt_position=angle)
-                self.debug(f"Changing angle to: {angle}. Result: {result}")
-                if result['success']:
-                    self.debug(f"Set blinds to angle: {angle}")
-                    # Record automated change details - set counter to 0
-                    self.automated_change_counter = 0
-                    self.expected_angle = angle
-                else:
-                    self.error(f"Could not set position to angle: {angle}")
+                # Check if angle changed to actual blinds angle respecting tolerance
+                tolerance_angle = self.params['blinds']['angle_tolerance']
+                if (not (self.current_angle <= min((angle + tolerance_angle), 100)  and self.current_angle >= max((angle - tolerance_angle), 0))) or height_changed:
+                    result = self.call_service("cover/set_cover_tilt_position",
+                                    entity_id=self.params['entities']['cover'],
+                                    tilt_position=angle)
+                    self.debug(f"Changing angle to: {angle}. Result: {result}")
+                    if result['success']:
+                        self.debug(f"Set blinds to angle: {angle}")
+                        # Record automated change details - set counter to 0
+                        self.automated_change_counter = 0
+                        self.expected_angle = angle
+                    else:
+                        self.error(f"Could not set position to angle: {angle}")
+                        
+        else:
+            self.debug(f"Last position change still ongoing.")
                     
         self.debug("set_position finish")
 
@@ -715,16 +744,19 @@ class Blinds(Hass):
             self.debug("Error calculating effective width, using configured width")
             return slat_width
 
-    def calculate_angle(self):
+    def calculate_angle(self, perpendicular=False):
         """
         Calculate optimal blind angle based on slat geometry and sun elevation.
         Uses trigonometry to find the minimum angle needed to block direct sunlight.
+        
+        Args:
+            perpendicular: If True, calculate angle 90° rotated from optimal blocking angle
         
         Returns angle in percentage (0-100%) where:
         - 0% = vertical slats (90° physical angle)
         - 100% = horizontal slats (0° physical angle)
         """
-        self.debug(f"Calculating angle based on: elevation={self.elevation}°")
+        self.debug(f"Calculating angle based on: elevation={self.elevation}°, perpendicular={perpendicular}")
         
         # If sun is behind facade or outside elevation range, fully open blinds
         if self.elevation > 90 or self.elevation < 0:
@@ -739,14 +771,13 @@ class Blinds(Hass):
             return self.params['move_contraints']['max_angle']
         
         # Calculate critical elevation angle where slats must be horizontal
-        # Using arctan(b/c) to find the angle where sun would still hit lower slat
         critical_angle_rad = math.atan(b/c)
         critical_angle_deg = math.degrees(critical_angle_rad)
         
         self.debug(f"Critical elevation angle: {round(critical_angle_deg, 1)}°")
         
-        # If sun elevation is above critical angle, keep slats horizontal
-        if self.elevation >= critical_angle_deg:
+        # If sun elevation is above critical angle, keep slats horizontal - except in perpendicular mode
+        if self.elevation >= critical_angle_deg and not perpendicular:
             self.debug(f"Sun elevation ({self.elevation}°) above critical angle, using horizontal position")
             return self.params['move_contraints']['max_angle']
         
@@ -758,11 +789,19 @@ class Blinds(Hass):
             # Using law of sines: sin(gamma) = (b * sin(alpha)) / c
             gamma_rad = math.asin((b * math.sin(alpha)) / c)
             
+            # For perpendicular angle, add 90° (π/2) in radians before converting to degrees
+            if perpendicular:
+                gamma_rad = (gamma_rad + math.pi/2) % math.pi
+            
             # Convert to degrees
             gamma_deg = math.degrees(gamma_rad)
             
-            # Add 90° to get angle from vertical (gamma_deg is from horizontal)
-            slat_angle = round(90 - gamma_deg)
+            if perpendicular:
+                # For perpendicular, add 90° and ensure we stay within 0-90° range
+                slat_angle = min(90, 90 - gamma_deg + 90)
+            else:
+                # Add 90° to get angle from vertical (gamma_deg is from horizontal)
+                slat_angle = 90 - gamma_deg
             
             # Convert physical angle (0-90°) to percentage (100-0%)
             # Where 90° (vertical) = 0% and 0° (horizontal) = 100%
@@ -780,7 +819,8 @@ class Blinds(Hass):
             elif angle_percentage > self.params['move_contraints']['max_angle']:
                 angle_percentage = self.params['move_contraints']['max_angle']
                 
-            self.debug(f"Calculated angle: elevation={self.elevation}°, physical_angle={slat_angle}°, percentage={angle_percentage}%")
+            self.debug(f"Calculated angle: elevation={self.elevation}°, physical_angle={slat_angle}°, "
+                      f"percentage={angle_percentage}%, perpendicular={perpendicular}")
             return angle_percentage
             
         except ValueError:
@@ -1029,7 +1069,20 @@ class Blinds(Hass):
                 return self.params['dawn']['dawn_height'], self.params['dawn']['dawn_horizontal_angle']
             case self.STATE_SHADOW_TO_HORIZONTAL_TIMER | self.STATE_SHADOW:
                 height = self.calculate_height()
-                angle = self.calculate_angle()
+
+                perpendicular_flag = False
+                if self.params.get('comfort_temperature'):
+                    if self.params['comfort_temperature'] < self.current_temperature:
+                        # When actual temperature higher than comfort temperature and solar heating is not available or active.
+                        # Than use perpendicular setting to prevent from heating up by sun
+                        perpendicular_flag = True
+                        if self.params.get("solar_heating_available"):
+                            if self.solar_heating_active == STATE_ON:
+                                # Set back to false - no perpendicular when solar heating in Winter
+                                perpendicular_flag = False
+                    self.debug(f"Perpendicular Flag: {perpendicular_flag} Comfort Temperature: {self.params['comfort_temperature']} Current Temperature: {self.current_temperature}")
+
+                angle = self.calculate_angle(perpendicular=perpendicular_flag)
                 self.debug(f"handle_states: Calculated new height: {height}, angle: {angle}")
                 return height, angle
             case self.STATE_NEUTRAL_TO_SHADOW_TIMER | self.STATE_NEUTRAL | self.STATE_NEUTRAL_TO_DAWN_TIMER:
@@ -1118,11 +1171,14 @@ class Blinds(Hass):
 
     def on_cover_change(self, entity, attribute, old, new, kwargs):
         if new is None or new['state'] in ["opening", "closing", UNKNOWN, UNAVAILABLE]:
+            self.moving = True
             return
         else:
+            self.moving = False
             self.debug(f"Cover changed: {entity=}, {attribute=}, {old=}, {new=}")
             # Raise self.automated_change_counter by one
             self.automated_change_counter += 1
+            self.debug(f"Automated Change Counter: {self.automated_change_counter}")
 
             # Set new values to variables
             self.current_height = new['attributes']['current_position']
@@ -1144,9 +1200,9 @@ class Blinds(Hass):
             
 
             if height_matches and angle_matches:
+                self.debug("Change matches expected automated change")
                 # Check if the curent event could be related to an automated cover change
                 if self.automated_change_counter <= self.max_automated_change_counter:
-                    self.debug("Change matches expected automated change")
                     # Reset external lock timer
                     self.blinds_locked_external_till = None
                     # Check if an maybe existing external lock could be released
@@ -1170,10 +1226,6 @@ class Blinds(Hass):
                     else:
                         self.debug(f"Already locked by external change till: {self.blinds_locked_external_till}")
 
-            # Clear automated change tracking if outside window
-            if self.automated_change_counter > self.max_automated_change_counter:
-                self.expected_height = None
-                self.expected_angle = None
 
     def save_states_to_file(self):
         """Save current states to JSON file with timestamp."""
