@@ -12,8 +12,11 @@ class EntityCollector:
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super(EntityCollector, cls).__new__(cls)
-            cls._instance.input_booleans = {}
         return cls._instance
+
+    def __init__(self):
+        if not hasattr(self, 'input_booleans'):
+            self.input_booleans = {}
     
     def add_boolean(self, entity_id: str, friendly_name: str, icon: str = None):
         """
@@ -42,17 +45,13 @@ class EntityCollector:
         if not self.input_booleans:
             return "# No input_booleans configured"
             
-        yaml_lines = ["input_boolean:"]
+        yaml_lines = []
         for entity_id, config in sorted(self.input_booleans.items()):
             yaml_lines.append(f"  {entity_id}:")
             for key, value in config.items():
                 yaml_lines.append(f"    {key}: {value}")
                 
-        return "\n".join(yaml_lines)
-    
-    def clear(self):
-        """Clear all collected input_booleans."""
-        self.input_booleans = {}
+        return "\n".join(yaml_lines) + "\n"
 
     def write_yaml_config(self, directory_path: str) -> str | None:
         """
@@ -70,16 +69,25 @@ class EntityCollector:
             Path(directory_path).mkdir(parents=True, exist_ok=True)
             
             # Fixed filename
-            filename = "entities.config.yaml"
+            filename = "entities.config"
             filepath = os.path.join(directory_path, filename)
             
             # Get YAML configuration
             yaml_content = self.get_yaml_config()
             
             # Write configuration to file
-            with open(filepath, 'w', encoding='utf-8') as f:
+            if os.path.exists(filepath):
+                append_write = 'a' # append if already exists
+            else:
+                append_write = 'w' # make a new file if not
+                # When new file add first line "input_boolean:"
+                yaml_content = "input_boolean:\n" + yaml_content
+            with open(filepath, append_write, encoding='utf-8') as f:
                 f.write(yaml_content)
-                
+            
+            # Clear variable when already written
+            self.input_booleans = {}
+
             return filepath
             
         except Exception as e:
