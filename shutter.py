@@ -4,7 +4,7 @@ import math
 import time
 import json
 from datetime import datetime, timedelta
-from time import time
+from time import sleep
 # from decimal import Decimal, ROUND_HALF_EVEN
 from appdaemon.plugins.hass.hassapi import Hass
 from helpers.entity_collector import EntityCollector
@@ -86,6 +86,9 @@ class Shutter(Hass):
         # Attribute if blinds is moving
         self.moving = False
 
+        # Defaulting debug state
+        self.debug_active = False
+
         # Add new variables for tracking automated changes
         self.automated_change_counter = -1
         self.max_automated_change_counter = 5  # Number of change position events after a automated change can happen (normally 2 - one event when height was arrived and one when also tilt was set)
@@ -99,8 +102,6 @@ class Shutter(Hass):
         self.debug(f"Initialized state: {self.shutter_state}")
         self.shutter_locked_external_till = None
         self.timer = None
-        if self.params.get('solar_heating_available'):
-            self.hysterese_reached = False
 
         # Check if we can load a previous stored state
         self.load_state_from_file()
@@ -117,7 +118,7 @@ class Shutter(Hass):
             self.read_entity_values()
         except ValueError:
             # Retry some seconds later - maybe integrations are not completely up and running
-            time.sleep(10)
+            sleep(10)
             self.read_entity_values()
 
         # Initialize sun attributes
@@ -135,10 +136,15 @@ class Shutter(Hass):
             self.shutter_locked_external_till = None
 
         self.manipulation_active = self.get_state(self.name_manipulation_active)
+        self.position_change_ongoing_counter = 0
+
+        # Initialize solar heating variables
         if self.params.get('solar_heating_available'):
             self.solar_heating_active = self.get_state(self.name_solar_heating_active)
-            # Initialize variable
-            self.solar_heating_state = STATE_OFF
+            self.hysterese_reached = False
+            self.set_state(self.name_solar_heating_status, STATE_OFF)
+        # Make variable generally available independent if solar heating is available or not
+        self.solar_heating_status = STATE_OFF
 
         # Setup listen events
         #Listen to the created boolean entities
@@ -168,6 +174,8 @@ class Shutter(Hass):
         # Listen to current temperature
         if self.params['entities'].get('climate'):
             self.listen_state(self.on_temperature_change, self.params['entities']['climate'], attribute='current_temperature')
+        if self.params['entities'].get('temperature_sensor'):
+            self.listen_state(self.on_temperature_change, self.params['entities']['temperature_sensor'])
 
         # Listen to cover changes to detect manual changes
         self.listen_state(self.on_cover_change, self.params['entities']['cover'], attribute='all')
@@ -199,7 +207,9 @@ class Shutter(Hass):
         if self.params.get('entities', {}).get("window_sensor"):
             self.window_open = self.get_state(self.params['entities']['window_sensor'])
         if self.params['entities'].get('climate'):
-            self.current_temperature = self.get_state(self.params['entities'].get('climate'), attribute="current_temperature")
+            self.current_temperature = float(self.get_state(self.params['entities']['climate'], attribute="current_temperature"))
+        if self.params['entities'].get('temperature_sensor'):
+            self.current_temperature = float(self.get_state(self.params['entities']['temperature_sensor']))
         if self.params['shadow'].get('shadow_brightness_threshold_entity'):
             self.sunshine_brightness_threshold = int(float(self.get_state(self.params['shadow'].get('shadow_brightness_threshold_entity'))))
 
@@ -238,9 +248,21 @@ class Shutter(Hass):
                     valid = False
 
             if self.params.get('solar_heating_available'):
-                if not self.entity_exists(self.params.get('entities', {}).get('climate')):
-                    self.log(f"Configuration entity entities.climate: {self.params.get('entities', {}).get('climate')} could not be found in HASS")
+                if not(self.params['entities'].get('climate')) and not(self.params['entities'].get('temperature_sensor')):
+                    self.log(f"No temperature sensor available for solar heating. Neither climate nor temperature_sensor defined")
                     valid = False
+                if self.params['entities'].get('climate') and self.params['entities'].get('temperature_sensor'):
+                    self.log(f"Only one temperature sensor temperature sensor should be defined for solar heating. Actually climate and temperature_sensor defined")
+                    valid = False 
+                if self.params['entities'].get('climate'):
+                    if not self.entity_exists(self.params['entities']['climate']):
+                        self.log(f"Configuration entity entities.climate: {self.params['entities']['climate']} could not be found in HASS")
+                        valid = False
+                if self.params['entities'].get('temperature_sensor'):
+                    if not self.entity_exists(self.params['entities']['temperature_sensor']):
+                        self.log(f"Configuration entity entities.temperature_sensor: {self.params['entities']['temperature_sensor']} could not be found in HASS")
+                        valid = False
+
 
         if self.params['facade']['min_elevation'] >= self.params['facade']['max_elevation']:
             self.log("Configuration error min_elevation is greater or equal max_elevation. Makes no sense.")
@@ -289,9 +311,6 @@ class Shutter(Hass):
                 valid = False
 
         if self.params.get('solar_heating_available'):
-            if self.params['entities'].get('climate') is None:
-                self.log("Solar heating configured, but entities.climate missing")
-                valid = False
             if not self.params.get('solar_heating'):
                 self.log("solar_heating branch has to be defined in config when solar_heating_available is True")
                 valid = False
@@ -311,7 +330,8 @@ class Shutter(Hass):
 
 
     def debug(self, text):
-        if self.params['DEBUG']:
+        # Either debug is defined in Config or by input_boolean "debug_active" in HASS
+        if self.params['DEBUG'] or self.debug_active:
             self.log(text)
 
     def create_internal_entities(self):
@@ -334,6 +354,8 @@ class Shutter(Hass):
             entities_missing = True
         else:
             self.input_booleans.append(self.name_shutter_locked)
+            # Read actual state while initializing
+            self.shutter_locked = self.get_state(self.name_shutter_locked)
 
         self.name_shutter_locked_external = "input_boolean." + self.params['unique_id'] + "_shutter_locked_external"
         if not self.entity_exists(self.name_shutter_locked_external):
@@ -358,6 +380,8 @@ class Shutter(Hass):
             entities_missing = True
         else:
             self.input_booleans.append(self.name_manipulation_active)
+            # Read actual state while initializing
+            self.manipulation_active = self.get_state(self.name_manipulation_active)
 
         self.name_solar_heating_active = "input_boolean." + self.params['unique_id'] + "_solar_heating_active"
         self.name_solar_heating_status = "input_boolean." + self.params['unique_id'] + "_solar_heating_status"
@@ -373,6 +397,8 @@ class Shutter(Hass):
                 entities_missing = True
             else:
                 self.input_booleans.append(self.name_solar_heating_active)
+                # Read actual state while initializing
+                self.solar_heating_active = self.get_state(self.name_solar_heating_active)
 
             if not self.entity_exists(self.name_solar_heating_status):
                 name = f"Shutter {self.params['name']} solar heating status"
@@ -384,6 +410,22 @@ class Shutter(Hass):
                 entities_missing = True
             else:
                 self.input_booleans.append(self.name_solar_heating_status)
+                # Read actual state while initializing
+                self.solar_heating_status = self.get_state(self.name_solar_heating_status)
+
+        self.name_debug_active = "input_boolean." + self.params['unique_id'] + "_debug_active"
+        if not self.entity_exists(self.name_debug_active):
+            name = f"Shutter {self.params['name']} debug active"
+            collector.add_boolean(
+                f"{self.params['unique_id']}_debug_active",
+                name,
+                "mdi:text-box-edit"
+            )
+            entities_missing = True
+        else:
+            self.input_booleans.append(self.name_debug_active)
+            # Read actual state while initializing
+            self.debug_active = self.get_state(self.name_debug_active)
 
         # When entities are missing, create (overwrite configuration template file)
         if entities_missing:
@@ -408,8 +450,9 @@ class Shutter(Hass):
                 for entity_id in  data['service_data']['entity_id']:
                     if entity_id in self.input_booleans:
                         if entity_id == self.name_solar_heating_status:
-                            # This boolean hould not be modified from outside. So overwrite with actual state
-                            self.set_state(entity_id=entity_id, state=self.solar_heating_status)
+                            # This boolean should not be modified from outside. So overwrite with actual state when HASS state differs from internal
+                            if (self.solar_heating_status == STATE_OFF and data['service'] == "turn_on") or (self.solar_heating_status == STATE_ON and data['service'] == "turn_off"):
+                                self.set_state(entity_id=entity_id, state=self.solar_heating_status)
                         elif data['service'] == "turn_off":
                             self.log(f"{entity_id} switched off")
                             self.set_state(entity_id=entity_id, state=STATE_OFF)
@@ -490,44 +533,6 @@ class Shutter(Hass):
                         self.debug(f"Ventilation activated: Current height: {self.current_height} ventialtion height: {self.params['ventilation'].get('ventilation_height')}")
                         self.new_height = self.params['ventilation'].get("ventilation_height")
 
-        # Solar heat | for comparison of two floats the comparison issue is fine and we don't care about small differences
-        if self.params.get("solar_heating_available"):
-            if self.solar_heating_active == STATE_ON:
-                if self.current_temperature > self.params['solar_heating']['solar_heating_temperature']:
-                    # Current Temperature above wanted temperature -> No more solar heating
-                    self.hysterese_reached = True
-                    # Update status
-                    if self.solar_heating_state == STATE_ON:
-                        self.solar_heating_state = STATE_OFF
-                        self.set_state(self.name_solar_heating_status, STATE_OFF)
-                        self.debug("Temperature reached and above threshold. Solar heating status OFF.")
-                else:
-                    # Current Temperature below wanted temperature
-                    if self.hysterese_reached:
-                        # check if current_temperature again below hysterese
-                        if  self.current_temperature < (self.params['solar_heating']['solar_heating_temperature'] - float(self.params['solar_heating']['solar_heating_hysterese'])):
-                            # Current temperature below hysterese -> Heat again
-                            self.hysterese_reached = False
-                            self.new_height = self.params['solar_heating']['solar_heating_height']
-                            if self.solar_heating_state == STATE_OFF:
-                                self.solar_heating_state = STATE_ON
-                                self.set_state(self.name_solar_heating_status, STATE_ON)
-                                self.debug("Temperature below threshold. Solar heating status ON.")
-                    else:
-                        # Hysterese not reached, so do solar heating
-                        self.new_height = self.params['solar_heating']['solar_heating_height']
-                        if self.solar_heating_state == STATE_OFF:
-                            self.solar_heating_state = STATE_ON
-                            self.set_state(self.name_solar_heating_status, STATE_ON)
-                            self.debug("Temperature below threshold. Solar heating status ON.")
-            else:
-                # chack that status boolean has state off
-                if self.solar_heating_state == STATE_ON:
-                    self.solar_heating_state = STATE_OFF
-                    self.set_state(self.name_solar_heating_status, STATE_OFF)
-                    self.debug("Solar heating not active. Solar heating status OFF.")
-
-
         # When after dusk, prevent from moving shutter up if configured
         if self.params['dawn'].get("dawn_prevent_move_up_after_dusk"):
             if 'next_dusk' in dir(self) and self.next_dusk.replace(tzinfo=None) < datetime.now().replace(tzinfo=None):
@@ -570,7 +575,8 @@ class Shutter(Hass):
         # When this value equals 0, the logic changed position but no feedback from device has arrived till now (blinds still moving)
         # Only when last change was finished, a new change should be sent
         if self.automated_change_counter != 0:
-
+            # Reset counter when a "real" change arrived
+            self.position_change_ongoing_counter = 0
             # Only write changes to cover entity when not locked in any way
             if (self.shutter_locked == STATE_OFF
                 and self.shutter_locked_external == STATE_OFF
@@ -592,7 +598,11 @@ class Shutter(Hass):
 
         else:
             self.debug(f"Last position change still ongoing.")
-
+            self.position_change_ongoing_counter += 1
+            if self.position_change_ongoing_counter >= 10:
+                # Seems that a response is missing. Reset states
+                self.position_change_ongoing_counter = 0
+                self.automated_change_counter = 1
         self.debug("set_position finish")
 
             
@@ -637,13 +647,17 @@ class Shutter(Hass):
 
     def calculate_height(self):
         """Calculate shutter height for light strip."""
-        if not self.params.get('shadow', {}).get('light_strip'):
-            return 0
-        if self.params['shadow']['light_strip'] == 0:
-            return 0 # Fully closed when no light strip is defined
-            
-        height = round(self.params['shadow']['light_strip'] * math.tan(math.radians(self.elevation)))
-        height_pct = 100 - round(height * 100 / self.params['shadow']['total_height'])
+        # check if solar heating is available, active and state is on
+        if self.params.get('solar_heating_available'):
+            if self.solar_heating_active == STATE_ON:
+                if self.solar_heating_status == STATE_ON:
+                    self.debug(f"Solar heating is active and state is on. Set height to {self.params['solar_heating']['solar_heating_height']}")
+                    return self.params['solar_heating']['solar_heating_height']
+        if ( not self.params.get('shadow', {}).get('light_strip') ) or self.params['shadow']['light_strip'] == 0:
+            height_pct = 0
+        else:
+            height = round(self.params['shadow']['light_strip'] * math.tan(math.radians(self.elevation)))
+            height_pct = 100 - round(height * 100 / self.params['shadow']['total_height'])
 
         # Apply min/max constraints from config
         if height_pct < self.params['move_constraints']['min_height']:
@@ -654,6 +668,50 @@ class Shutter(Hass):
         # Apply stepping
         return round(height_pct / self.params['move_constraints']['height_step']) * self.params['move_constraints']['height_step']
 
+    def check_solar_heating(self):
+        # Solar heat | for comparison of two floats the comparison issue is fine and we don't care about small differences
+        # This logic is only for managing the status input_booleans of solar heating. The blinds position are set in the calculate_position and angle method
+        if self.params.get("solar_heating_available"):
+            if self.solar_heating_active == STATE_ON:
+                if self.current_temperature > self.params['solar_heating']['solar_heating_temperature']:
+                    # Current Temperature above wanted temperature -> No more solar heating
+                    self.hysterese_reached = True
+                    # Update status
+                    if self.solar_heating_status == STATE_ON:
+                        self.solar_heating_status = STATE_OFF
+                        self.set_state(self.name_solar_heating_status, STATE_OFF)
+                        self.debug("Temperature reached and above threshold. Solar heating status OFF.")
+                else:
+                    if self.hysterese_reached:
+                        # Temerature was already above wanted temperature - check if temperature is again below hysterese
+                        if  self.current_temperature < (self.params['solar_heating']['solar_heating_temperature'] - float(self.params['solar_heating']['solar_heating_hysterese'])):
+                            # Current temperature below hysterese -> Heat again
+                            self.hysterese_reached = False
+                            if self.solar_heating_status == STATE_OFF:
+                                self.solar_heating_status = STATE_ON
+                                self.set_state(self.name_solar_heating_status, STATE_ON)
+                                self.debug("Temperature below threshold. Solar heating status ON.")
+                    else:
+                        # Hysterese not reached upfront, so do solar heating
+                        if self.solar_heating_status == STATE_OFF:
+                            self.solar_heating_status = STATE_ON
+                            self.set_state(self.name_solar_heating_status, STATE_ON)
+                            self.debug("Temperature below threshold. Solar heating status ON.")
+            else:
+                # check that status boolean has state off
+                if self.solar_heating_status == STATE_ON:
+                    self.solar_heating_status = STATE_OFF
+                    self.set_state(self.name_solar_heating_status, STATE_OFF)
+                    self.debug("Solar heating not active. Solar heating status OFF.")
+            
+            self.debug(f"Solar heating active: {self.solar_heating_active} - Solar heating status: {self.solar_heating_status}")
+
+    def reset_solar_heating(self):
+        # Reset solar heating status if switched on
+        if self.solar_heating_status == STATE_ON:
+            self.solar_heating_status = STATE_OFF
+            self.set_state(self.name_solar_heating_status, STATE_OFF)
+
     def check_external_lock(self):
         if self.shutter_locked_external == STATE_ON:
             # sanity check if shutter locked external on but no Timestamp, set back to off
@@ -661,13 +719,13 @@ class Shutter(Hass):
                 self.debug("Method check_external_lock no time found. Setting to off")
                 self.set_state(entity_id=self.name_shutter_locked_external, state=STATE_OFF)
                 # Read entity to be in sync with HASS
-                self.blinds_locked_external = self.get_state(entity_id=self.name_shutter_locked_external)
+                self.shutter_locked_external = self.get_state(entity_id=self.name_shutter_locked_external)
             elif datetime.now() > self.shutter_locked_external_till:
                 # reset lock
                 self.debug("Method check_external_lock time is up. Setting to off")
                 self.set_state(entity_id=self.name_shutter_locked_external, state=STATE_OFF)
                 # Read entity to be in sync with HASS
-                self.blinds_locked_external = self.get_state(entity_id=self.name_shutter_locked_external)
+                self.shutter_locked_external = self.get_state(entity_id=self.name_shutter_locked_external)
                 self.shutter_locked_external_till = None
 
     def get_shadow_brightness_threshold(self):
@@ -705,6 +763,8 @@ class Shutter(Hass):
 
     def handle_state_shadow(self):
         if self.in_sun() and self.params['shadow_active']:
+            # Check if solar heating should be active
+            self.check_solar_heating()
             if self.brightness_shadow < self.get_shadow_brightness_threshold():
                 # Brightness below threshold - start timer for moving to horizontal
                 self.debug("Brightness below threshold. Switching from SHADOW to SHADOW_TO_NEUTRAL_TIMER")
@@ -739,6 +799,8 @@ class Shutter(Hass):
             return self.STATE_NEUTRAL
     
     def handle_state_neutral(self):
+        # Reset solar heating when facade no longer in sun
+        self.reset_solar_heating()
         if self.params['dawn_active'] and (self.get_dawn_brightness() < self.params['dawn']['dawn_brightness_threshold']):
             # Separate dawn object and brightness below threshold - start neutral to dawn timer
             self.debug("Brightness below dawn threshold. Switching from NEUTRAL to NEUTRAL_TO_DAWN_TIMER")
@@ -818,14 +880,10 @@ class Shutter(Hass):
         """ Method to handle height based on actual state """
         # calculate/determine height based on state
         match self.shutter_state:
-            case self.STATE_SHADOW_TO_NEUTRAL_TIMER:
-                height = self.calculate_height()
-                self.debug(f"handle_states: Calculated new height: {height}")
-                return height
             case self.STATE_DAWN_TO_NEUTRAL_TIMER:
                 self.debug(f"handle_states: Calculated new height: {self.params['dawn']['dawn_height']}")
                 return self.params['dawn']['dawn_height']
-            case self.STATE_SHADOW:
+            case self.STATE_SHADOW | self.STATE_SHADOW_TO_NEUTRAL_TIMER:
                 height = self.calculate_height()
                 self.debug(f"handle_states: Calculated new height: {height}")
                 return height
@@ -869,6 +927,8 @@ class Shutter(Hass):
             self.manipulation_active = new
         elif entity == self.name_solar_heating_active:
             self.solar_heating_active = new
+        elif entity == self.name_debug_active:
+            self.debug_active = new
         # Call main to change immediately
         self.main()
 
