@@ -4,7 +4,7 @@ import math
 import time
 import json
 from datetime import datetime, timedelta
-from time import time
+from time import sleep
 from decimal import Decimal, ROUND_HALF_EVEN
 from appdaemon.plugins.hass.hassapi import Hass
 from helpers.entity_collector import EntityCollector
@@ -42,7 +42,7 @@ class Blinds(Hass):
             "min_elevation": 0,
             "max_elevation": 90,
         },
-        "move_contraints": {
+        "move_constraints": {
             "min_angle": 0,
             "max_angle": 100
         },
@@ -99,6 +99,9 @@ class Blinds(Hass):
         # Attribute if blinds is moving
         self.moving = False
 
+        # Defaulting debug state
+        self.debug_active = False
+
         # Add new variables for tracking automated changes
         self.automated_change_counter = -1
         self.max_automated_change_counter = 5  # Number of change position events after a automated change can happen (normally 2 - one event when height was arrived and one when also tilt was set)
@@ -108,12 +111,16 @@ class Blinds(Hass):
         # Validate config
         self.validate_config()
 
+        # Calculate horizontal percentage during initialization
+        # Will be used in calculate_angle method
+        alpha_radiant = math.acos(self.params['blinds']['slat_distance'] / self.params['blinds']['slat_width'])
+        alpha_angle = 180 / math.pi * alpha_radiant
+        self.horizontal_percentage = round(((alpha_angle) / 90) * 100)
+
         # Initialize States beginning from Neutral
         self.blinds_state = self.STATE_NEUTRAL
         self.blinds_locked_external_till = None
         self.timer = None
-        if self.params.get('solar_heating_available'):
-            self.hysterese_reached = False
 
         # Check if we can load a previous stored state
         self.load_state_from_file()
@@ -136,7 +143,7 @@ class Blinds(Hass):
             self.read_entity_values()
         except ValueError:
             # Retry some seconds later - maybe integrations are not completely up and running
-            time.sleep(10)
+            sleep(10)
             self.read_entity_values()
 
         # Initialize sun attributes
@@ -155,10 +162,15 @@ class Blinds(Hass):
 
 
         self.manipulation_active = self.get_state(self.name_manipulation_active)
+        self.position_change_ongoing_counter = 0
+
+        # Initialize solar heating variables
         if self.params.get('solar_heating_available'):
             self.solar_heating_active = self.get_state(self.name_solar_heating_active)
-            # Initialize variable
-            self.solar_heating_state = STATE_OFF
+            self.hysterese_reached = False
+            self.set_state(self.name_solar_heating_status, STATE_OFF)
+        # Make variable generally available independent if solar heating is available or not
+        self.solar_heating_status = STATE_OFF
 
         # Setup listen events
         #Listen to the created boolean entities
@@ -271,8 +283,8 @@ class Blinds(Hass):
             self.log("Configuration error min_elevation is greater or equal max_elevation. Makes no sense.")
             result = False
 
-        if self.params['move_contraints']['min_angle'] >= self.params['move_contraints']['max_angle']:
-            self.log("Configuration error min_angle is greater or equal max_angle. Makes no sense.")
+        if self.params['move_constraints']['min_angle'] >= self.params['move_constraints']['max_angle']:
+            self.log("Configuration error move_constraints min_angle is greater or equal max_angle. Makes no sense.")
             result = False
 
         if not self.params.get('facade'):
@@ -344,7 +356,8 @@ class Blinds(Hass):
 
 
     def debug(self, text):
-        if self.params['DEBUG']:
+        # Either debug is defined in Config or by input_boolean "debug_active" in HASS
+        if self.params['DEBUG'] or self.debug_active:
             self.log(text)
 
     def create_internal_entities(self):
@@ -367,6 +380,8 @@ class Blinds(Hass):
             entities_missing = True
         else:
             self.input_booleans.append(self.name_blinds_locked)
+            # Read actual state while initializing
+            self.blinds_locked = self.get_state(self.name_blinds_locked)
 
         self.name_blinds_locked_external = "input_boolean." + self.params['unique_id'] + "_blinds_locked_external"
         if not self.entity_exists(self.name_blinds_locked_external):
@@ -379,6 +394,9 @@ class Blinds(Hass):
             entities_missing = True
         else:
             self.input_booleans.append(self.name_blinds_locked_external)
+            # When blind is newly initialized, this object should not be read from HASS because the "locked_till" is only stored in Appdeamon
+            # And only makes sense to have it as a pair
+            pass
 
         self.name_manipulation_active = "input_boolean." + self.params['unique_id'] + "_manipulation_active"
         if not self.entity_exists(self.name_manipulation_active):
@@ -391,6 +409,8 @@ class Blinds(Hass):
             entities_missing = True
         else:
             self.input_booleans.append(self.name_manipulation_active)
+            # Read actual state while initializing
+            self.manipulation_active = self.get_state(self.name_manipulation_active)
 
         self.name_solar_heating_active = "input_boolean." + self.params['unique_id'] + "_solar_heating_active"
         self.name_solar_heating_status = "input_boolean." + self.params['unique_id'] + "_solar_heating_status"
@@ -406,6 +426,8 @@ class Blinds(Hass):
                 entities_missing = True
             else:
                 self.input_booleans.append(self.name_solar_heating_active)
+                # Read actual state while initializing
+                self.solar_heating_active = self.get_state(self.name_solar_heating_active)
 
             if not self.entity_exists(self.name_solar_heating_status):
                 name = f"Blinds {self.params['name']} solar heating status"
@@ -417,6 +439,22 @@ class Blinds(Hass):
                 entities_missing = True
             else:
                 self.input_booleans.append(self.name_solar_heating_status)
+                # Read actual state while initializing
+                self.solar_heating_status = self.get_state(self.name_solar_heating_status)
+
+        self.name_debug_active = "input_boolean." + self.params['unique_id'] + "_debug_active"
+        if not self.entity_exists(self.name_debug_active):
+            name = f"Blinds {self.params['name']} debug active"
+            collector.add_boolean(
+                f"{self.params['unique_id']}_debug_active",
+                name,
+                "mdi:text-box-edit"
+            )
+            entities_missing = True
+        else:
+            self.input_booleans.append(self.name_debug_active)
+            # Read actual state while initializing
+            self.debug_active = self.get_state(self.name_debug_active)
 
         # When entities are missing, create (overwrite configuration template file)
         if entities_missing:
@@ -441,8 +479,9 @@ class Blinds(Hass):
                 for entity_id in  data['service_data']['entity_id']:
                     if entity_id in self.input_booleans:
                         if entity_id == self.name_solar_heating_status:
-                            # This boolean hould not be modified from outside. So overwrite with actual state
-                            self.set_state(entity_id=entity_id, state=self.solar_heating_status)
+                            # This boolean should not be modified from outside. So overwrite with actual state when HASS state differs from internal
+                            if (self.solar_heating_status == STATE_OFF and data['service'] == "turn_on") or (self.solar_heating_status == STATE_ON and data['service'] == "turn_off"):
+                                self.set_state(entity_id=entity_id, state=self.solar_heating_status)
                         elif data['service'] == "turn_off":
                             self.log(f"{entity_id} switched off")
                             self.set_state(entity_id=entity_id, state=STATE_OFF)
@@ -452,7 +491,7 @@ class Blinds(Hass):
             elif type(data['service_data']['entity_id']) == str:
                 if data['service_data']['entity_id'] in self.input_booleans:
                     if data['service_data']['entity_id'] == self.name_solar_heating_status:
-                        # This boolean hould not be modified from outside. So overwrite with actual state
+                        # This boolean should not be modified from outside. So overwrite with actual state
                         self.set_state(entity_id=data['service_data']['entity_id'], state=self.solar_heating_status)
                     elif data['service'] == "turn_off":
                         entity_id = data['service_data']['entity_id']
@@ -529,46 +568,6 @@ class Blinds(Hass):
                     self.new_angle = self.params['ventilation'].get("ventilation_angle")
                 self.debug("Window open. Overwrite positions with ventilation settings.")
 
-        # Solar heat | for comparison of two floats the comparison issue is fine and we don't care about small differences
-        if self.params.get("solar_heating_available"):
-            if self.solar_heating_active == STATE_ON:
-                if self.current_temperature > self.params['solar_heating']['solar_heating_temperature']:
-                    # Current Temperature above wanted temperature -> No more solar heating
-                    self.hysterese_reached = True
-                    # Update status
-                    if self.solar_heating_state == STATE_ON:
-                        self.solar_heating_state = STATE_OFF
-                        self.set_state(self.name_solar_heating_status, STATE_OFF)
-                        self.debug("Temperature reached and above threshold. Solar heating status OFF.")
-                else:
-                    # Current Temperature below wanted temperature
-                    if self.hysterese_reached:
-                        # check if current_temperature again below hysterese
-                        if  self.current_temperature < (self.params['solar_heating']['solar_heating_temperature'] - float(self.params['solar_heating']['solar_heating_hysterese'])):
-                            # Current temperature below hysterese -> Heat again
-                            self.hysterese_reached = False
-                            self.new_height = self.params['solar_heating']['solar_heating_height']
-                            self.new_angle = self.params['solar_heating']['solar_heating_angle']
-                            if self.solar_heating_state == STATE_OFF:
-                                self.solar_heating_state = STATE_ON
-                                self.set_state(self.name_solar_heating_status, STATE_ON)
-                                self.debug("Temperature below threshold. Solar heating status ON.")
-                    else:
-                        # Hysterese not reached, so do solar heating
-                        self.new_height = self.params['solar_heating']['solar_heating_height']
-                        self.new_angle = self.params['solar_heating']['solar_heating_angle']
-                        if self.solar_heating_state == STATE_OFF:
-                            self.solar_heating_state = STATE_ON
-                            self.set_state(self.name_solar_heating_status, STATE_ON)
-                            self.debug("Temperature below threshold. Solar heating status ON.")
-            else:
-                # chack that status boolean has state off
-                if self.solar_heating_state == STATE_ON:
-                    self.solar_heating_state = STATE_OFF
-                    self.set_state(self.name_solar_heating_status, STATE_OFF)
-                    self.debug("Solar heating not active. Solar heating status OFF.")
-
-
         # When after dusk, prevent from moving blinds up if configured
         if self.params['dawn'].get("dawn_prevent_move_up_after_dusk"):
             if 'next_dusk' in dir(self) and self.next_dusk.replace(tzinfo=None) < datetime.now().replace(tzinfo=None):
@@ -613,6 +612,8 @@ class Blinds(Hass):
         # When this value equals 0, the logic changed position but no feedback from device has arrived till now (blinds still moving)
         # Only when last change was finished, a new change should be sent
         if self.automated_change_counter != 0:
+            # Reset counter when a "real" change arrived
+            self.position_change_ongoing_counter = 0
             # Only write changes to cover entity when not locked in any way
             if (self.blinds_locked == STATE_OFF
                 and self.blinds_locked_external == STATE_OFF
@@ -654,6 +655,12 @@ class Blinds(Hass):
                         
         else:
             self.debug(f"Last position change still ongoing.")
+            self.position_change_ongoing_counter += 1
+            if self.position_change_ongoing_counter >= 10:
+                # Seems that a response is missing. Reset states
+                self.position_change_ongoing_counter = 0
+                self.automated_change_counter = 1
+
                     
         self.debug("set_position finish")
 
@@ -756,82 +763,125 @@ class Blinds(Hass):
         - 0% = vertical slats (90° physical angle)
         - 100% = horizontal slats (0° physical angle)
         """
-        self.debug(f"Calculating angle based on: elevation={self.elevation}°, perpendicular={perpendicular}")
+        self.debug(f"Calculating angle based on: elevation={self.elevation}, perpendicular={perpendicular}")
         
         # If sun is behind facade or outside elevation range, fully open blinds
         if self.elevation > 90 or self.elevation < 0:
-            return self.params['move_contraints']['max_angle']
+            return self.params['move_constraints']['max_angle']
+        
+        # Special case solar heating
+        # check if solar heating is available, active and state is on
+        if self.params.get('solar_heating_available'):
+            if self.solar_heating_active == STATE_ON:
+                if self.solar_heating_status == STATE_ON:
+                    self.debug(f"Solar heating active. Using Solar heating angle: {self.params['solar_heating']['solar_heating_angle']}")
+                    return self.params['solar_heating']['solar_heating_angle']
+    
+        # Another special case when timer for HORIZONTAL_TO_NEUTRAL running
+        # This is handled after solar heating was checked. When timer is running, solar heating has priority
+        if self.blinds_state == self.STATE_HORIZONTAL_TO_NEUTRAL_TIMER:
+            self.debug(f"HORIZONTAL_TO_NEUTRAL_TIMER active, using horizontal angle: {self.params['shadow']['shadow_horizontal_angle']}")
+            return self.params['shadow']['shadow_horizontal_angle']
 
         # Get slat measurements from config
         b = self.params['blinds']['slat_distance']  # Distance between slats in mm
-        c = self.calculate_effective_slat_width()   # Effective width considering sun azimuth
-        
+        c = self.calculate_effective_slat_width()   # Effective width considering deviation sun azimuth from facade
+
         # If effective width calculation returns None (sun behind facade), fully open blinds
         if c is None:
-            return self.params['move_contraints']['max_angle']
+            return self.params['move_constraints']['max_angle']
         
         # Calculate critical elevation angle where slats must be horizontal
         critical_angle_rad = math.atan(b/c)
         critical_angle_deg = math.degrees(critical_angle_rad)
         
-        self.debug(f"Critical elevation angle: {round(critical_angle_deg, 1)}°")
+        self.debug(f"Critical elevation angle: {round(critical_angle_deg, 1)}")
         
         # If sun elevation is above critical angle, keep slats horizontal - except in perpendicular mode
         if self.elevation >= critical_angle_deg and not perpendicular:
-            self.debug(f"Sun elevation ({self.elevation}°) above critical angle, using horizontal position")
-            return self.params['move_contraints']['max_angle']
-        
-        # Convert elevation to radians for remaining calculations
-        alpha = math.radians(self.elevation)
+            self.debug(f"Sun elevation ({self.elevation}) above critical angle, using horizontal position")
+            return self.params['move_constraints']['max_angle']
         
         try:
-            # Calculate required gamma angle in radians
-            # Using law of sines: sin(gamma) = (b * sin(alpha)) / c
-            gamma_rad = math.asin((b * math.sin(alpha)) / c)
-            
-            # For perpendicular angle, add 90° (π/2) in radians before converting to degrees
-            if perpendicular:
-                gamma_rad = (gamma_rad + math.pi/2) % math.pi
-            
-            # Convert to degrees
-            gamma_deg = math.degrees(gamma_rad)
-            
             if perpendicular:
                 # For perpendicular, add 90° and ensure we stay within 0-90° range
-                slat_angle = min(90, 90 - gamma_deg + 90)
+                slat_angle = min(90, round(90 - self.elevation))
+                self.debug(f"Perpendicular mode: direct slat angle = {slat_angle}")
+                angle_percentage = round(((slat_angle) / 90) * 100)
             else:
-                # Add 90° to get angle from vertical (gamma_deg is from horizontal)
-                slat_angle = 90 - gamma_deg
+                # Testwise calculate angle relative to critical elevation angle
+
+                # critical angle is handled like 0 degree, 0 elevation is horizontal which means 90 degree (fully closed)
+                # Calculte the percentage of actual elevation between critical angle and horizontal
+                elevation_percentage = self.elevation / critical_angle_deg
+                # Calculate how much percent this is between fully opened percentage (100%) and horizontal_percentage
+                # As result we already get the percentag how much the shutter angle should be opened
+                angle_percentage = elevation_percentage * (100 - self.horizontal_percentage) + self.horizontal_percentage
+
+
+                # critical angle is handled like 0 degree, 0 elevation is horizontal which means 90 degree (fully closed)
+                #slat_angle = 90 - (self.elevation / critical_angle_deg * 90)
+                #self.debug(f"RELATIVE: Calculated angle of {slat_angle} for elevation {self.elevation}")
+
+                ### Old logic - calculating via triangle logic
+                ## Calculate angles in triangle
+                ## alpha is angle between sun and vertical
+                #alpha_deg = 90 - self.elevation
+                #alpha_rad = math.radians(alpha_deg)
+
+                ## beta is angle opposite to slat distance
+                #beta_rad = math.asin(math.sin(alpha_rad) * b / c)
+                #beta_deg = math.degrees(beta_rad)
+
+                ## gamma is angle between slat and vertical
+                #gamma_deg = 180 - alpha_deg - beta_deg
+                #self.debug(f"Gamma_deg of angle calculation: {gamma_deg}")
+
+                ## Add 90° to get angle from vertical (gamma_deg is from horizontal)
+                #slat_angle = round(90 - gamma_deg)
             
             # Convert physical angle (0-90°) to percentage (100-0%)
-            # Where 90° (vertical) = 0% and 0° (horizontal) = 100%
-            angle_percentage = round(((90 - slat_angle) / 90) * 100)
+            # Where 90° (vertical) = 100% and 0° (horizontal) = 0%
+            # angle_percentage = round(((90 - slat_angle) / 90) * 100) -> Seemed to be wrong
+            # angle_percentage = round(((slat_angle) / 90) * 100)
+
+            # In HASS the cover angle is fully closed with 0 and fully open with 100 so we have to transform
+            # angle_percentage = 100 - angle_percentage
             
-            # Apply stepping
-            angle_percentage = round(angle_percentage / self.params['blinds']['angle_step']) * self.params['blinds']['angle_step']
+            # Apply stepping. Because the calculated angle should be corner case also close angle one step more
+            angle_percentage, _ = divmod(angle_percentage, self.params['blinds']['angle_step'])
+            angle_percentage = angle_percentage * self.params['blinds']['angle_step'] - self.params['blinds']['angle_step']
+            # angle_percentage = round(angle_percentage / self.params['blinds']['angle_step']) * self.params['blinds']['angle_step']
             
-            # Add configured offset
-            angle_percentage = min(100, max(0, angle_percentage + self.params['blinds']['angle_offset']))
+            # Subtract configured offset (because offset should close blinds more than calculated)
+            angle_percentage = min(100, max(0, angle_percentage - self.params['blinds']['angle_offset']))
             
             # Apply min/max constraints from config
-            if angle_percentage < self.params['move_contraints']['min_angle']:
-                angle_percentage = self.params['move_contraints']['min_angle']
-            elif angle_percentage > self.params['move_contraints']['max_angle']:
-                angle_percentage = self.params['move_contraints']['max_angle']
+            if angle_percentage < self.params['move_constraints']['min_angle']:
+                angle_percentage = self.params['move_constraints']['min_angle']
+            elif angle_percentage > self.params['move_constraints']['max_angle']:
+                angle_percentage = self.params['move_constraints']['max_angle']
                 
-            self.debug(f"Calculated angle: elevation={self.elevation}°, physical_angle={slat_angle}°, "
-                      f"percentage={angle_percentage}%, perpendicular={perpendicular}")
+            self.debug(f"Calculated angle: elevation={self.elevation}, percentage={angle_percentage}%, perpendicular={perpendicular}")
             return angle_percentage
             
         except ValueError:
             # This can happen if b*sin(alpha) > c
             # In this case, sun is too high to block with slats
             self.debug(f"Sun too high to block - using horizontal position")
-            return self.params['move_contraints']['max_angle']
+            return self.params['move_constraints']['max_angle']
 
     def calculate_height(self):
         """Calculate blinds height for light strip."""
         # not active
+        # check if solar heating is available, active and state is on
+        if self.params.get('solar_heating_available'):
+            if self.solar_heating_active == STATE_ON:
+                if self.solar_heating_status == STATE_ON:
+                    self.debug(f"Solar heating is active and state is on. Set height to {self.params['solar_heating']['solar_heating_height']}")
+                    return self.params['solar_heating']['solar_heating_height']
+                
+        # as default return shadow_height
         return self.params['shadow']['shadow_height']
 
         if self.params['light_strip'] == 0:
@@ -842,6 +892,53 @@ class Blinds(Hass):
         
         # Apply stepping
         return round(height_pct / self.params['blinds']['height_step']) * self.params['blinds']['height_step']
+
+
+    def check_solar_heating(self):
+        # Solar heat | for comparison of two floats the comparison issue is fine and we don't care about small differences
+        # This logic is only for managing the status input_booleans of solar heating. The blinds position are set in the calculate_position and angle method
+        if self.params.get("solar_heating_available"):
+            # Only when facade is in sun, solar heating status should be on
+            if self.solar_heating_active == STATE_ON:
+                if self.current_temperature > self.params['solar_heating']['solar_heating_temperature']:
+                    # Current Temperature above wanted temperature -> No more solar heating
+                    self.hysterese_reached = True
+                    # Update status
+                    if self.solar_heating_status == STATE_ON:
+                        self.solar_heating_status = STATE_OFF
+                        self.set_state(self.name_solar_heating_status, STATE_OFF)
+                        self.debug("Temperature reached and above threshold. Solar heating status OFF.")
+                else:
+                    if self.hysterese_reached:
+                        # Temerature was already above wanted temperature - check if temperature is again below hysterese
+                        if  self.current_temperature < (self.params['solar_heating']['solar_heating_temperature'] - float(self.params['solar_heating']['solar_heating_hysterese'])):
+                            # Current temperature below hysterese -> Heat again
+                            self.hysterese_reached = False
+                            if self.solar_heating_status == STATE_OFF:
+                                self.solar_heating_status = STATE_ON
+                                self.set_state(self.name_solar_heating_status, STATE_ON)
+                                self.debug("Temperature below threshold. Solar heating status ON.")
+                    else:
+                        # Hysterese not reached upfront, so do solar heating
+                        if self.solar_heating_status == STATE_OFF:
+                            self.solar_heating_status = STATE_ON
+                            self.set_state(self.name_solar_heating_status, STATE_ON)
+                            self.debug("Temperature below threshold. Solar heating status ON.")
+            else:
+                # check that status boolean has state off
+                if self.solar_heating_status == STATE_ON:
+                    self.solar_heating_status = STATE_OFF
+                    self.set_state(self.name_solar_heating_status, STATE_OFF)
+                    self.debug("Solar heating not active. Solar heating status OFF.")
+            
+            self.debug(f"Solar heating active: {self.solar_heating_active} - Solar heating status: {self.solar_heating_status}")
+
+    def reset_solar_heating(self):
+        # Reset solar heating status if switched on
+        if self.solar_heating_status == STATE_ON:
+            self.solar_heating_status = STATE_OFF
+            self.set_state(self.name_solar_heating_status, STATE_OFF)
+
 
     def check_external_lock(self):
         if self.blinds_locked_external == STATE_ON:
@@ -880,6 +977,8 @@ class Blinds(Hass):
     def handle_state_horizontal_to_neutral_timer(self):
         # Check if brightness is above threshold, then reset timer and switch to "state_horizontal_to_shadow_timer"
         if self.in_sun() and self.params['shadow_active']:
+            # Check if solar heating should be active
+            self.check_solar_heating()
             if self.brightness_shadow > self.get_shadow_brightness_threshold():
                 self.debug("Brightness above threshold. Switching from HORIZONTAL_TO_NEUTRAL_TIMER back to SHADOW")
                 self.timer = None
@@ -903,6 +1002,8 @@ class Blinds(Hass):
 
     def handle_state_shadow_to_horizontal_timer(self):
         if self.in_sun() and self.params['shadow_active']:
+            # Check if solar heating should be active
+            self.check_solar_heating()
             if self.brightness_shadow > self.get_shadow_brightness_threshold():
                 # Brightness again above threshold - move back to shadow
                 self.debug("Brightness above threshold. Switching from SHADOW_TO HORIZONTAL_TIMER back to SHADOW")
@@ -925,6 +1026,8 @@ class Blinds(Hass):
 
     def handle_state_shadow(self):
         if self.in_sun() and self.params['shadow_active']:
+            # Check if solar heating should be active
+            self.check_solar_heating()
             if self.brightness_shadow < self.get_shadow_brightness_threshold():
                 # Brightness below threshold - start timer for moving to horizontal
                 self.debug("Brightness below threshold. Switching from SHADOW to SHADOW_TO_HORIZONTAL_TIMER")
@@ -948,6 +1051,8 @@ class Blinds(Hass):
             elif self.is_timer_finished():
                 self.debug("Timer finished. Switching from NEUTRAL_TO_SHADOW_TIMER to SHADOW")
                 self.timer = None
+                # Check if solar heating should be active
+                self.check_solar_heating()
                 return self.STATE_SHADOW
             else:
                 # nothing to change
@@ -959,6 +1064,8 @@ class Blinds(Hass):
             return self.STATE_NEUTRAL
     
     def handle_state_neutral(self):
+        # Reset solar heating when facade no longer in sun
+        self.reset_solar_heating()
         if self.params['dawn_active'] and (self.get_dawn_brightness() < self.params['dawn']['dawn_brightness_threshold']):
             # Separate dawn object and brightness below threshold - start neutral to dawn timer
             self.debug("Brightness below dawn threshold. Switching from NEUTRAL to NEUTRAL_TO_DAWN_TIMER")
@@ -1061,26 +1168,20 @@ class Blinds(Hass):
         """ Method to handle height and angle based on actual state """
         # calculate/determine height and angle based on state
         match self.blinds_state:
-            case self.STATE_HORIZONTAL_TO_NEUTRAL_TIMER:
-                self.debug(f"handle_states: Calculated new height: {self.params['shadow']['shadow_height']}, angle: {self.params['shadow']['shadow_horizontal_angle']}")
-                return self.params['shadow']['shadow_height'], self.params['shadow']['shadow_horizontal_angle']
             case self.STATE_DAWN_HORIZONTAL_TO_NEUTRAL_TIMER:
                 self.debug(f"handle_states: Calculated new height: {self.params['dawn']['dawn_height']}, angle: {self.params['dawn']['dawn_horizontal_angle']}")
                 return self.params['dawn']['dawn_height'], self.params['dawn']['dawn_horizontal_angle']
-            case self.STATE_SHADOW_TO_HORIZONTAL_TIMER | self.STATE_SHADOW:
+            case self.STATE_SHADOW | self.STATE_SHADOW_TO_HORIZONTAL_TIMER | self.STATE_HORIZONTAL_TO_NEUTRAL_TIMER:
                 height = self.calculate_height()
 
                 perpendicular_flag = False
                 if self.params.get('comfort_temperature'):
                     if self.params['comfort_temperature'] < self.current_temperature:
                         # When actual temperature higher than comfort temperature and solar heating is not available or active.
-                        # Than use perpendicular setting to prevent from heating up by sun
-                        perpendicular_flag = True
-                        if self.params.get("solar_heating_available"):
-                            if self.solar_heating_active == STATE_ON:
-                                # Set back to false - no perpendicular when solar heating in Winter
-                                perpendicular_flag = False
-                    self.debug(f"Perpendicular Flag: {perpendicular_flag} Comfort Temperature: {self.params['comfort_temperature']} Current Temperature: {self.current_temperature}")
+                        # Than use perpendicular setting to prevent from heating up by sun EXCEPT solar heating is active then it's winter
+                        if not (self.params.get('solar_heating_available') and self.solar_heating_active == STATE_ON):
+                            perpendicular_flag = True
+                            self.debug(f"Perpendicular Flag: {perpendicular_flag} Comfort Temperature: {self.params['comfort_temperature']} Current Temperature: {self.current_temperature}")
 
                 angle = self.calculate_angle(perpendicular=perpendicular_flag)
                 self.debug(f"handle_states: Calculated new height: {height}, angle: {angle}")
@@ -1126,6 +1227,8 @@ class Blinds(Hass):
             self.manipulation_active = new
         elif entity == self.name_solar_heating_active:
             self.solar_heating_active = new
+        elif entity == self.name_debug_active:
+            self.debug_active = new
         # Call main to change immediately
         self.main()
 
