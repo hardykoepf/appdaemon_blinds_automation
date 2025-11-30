@@ -21,8 +21,7 @@ class Blinds(Hass):
     """Represents a single blinds with its configuration and state."""
 
     # States
-    STATE_HORIZONTAL_TO_NEUTRAL_TIMER = 5
-    STATE_HORIZONTAL = 4
+    STATE_HORIZONTAL_TO_NEUTRAL_TIMER = 4
     STATE_SHADOW_TO_HORIZONTAL_TIMER = 3
     STATE_SHADOW = 2
     STATE_NEUTRAL_TO_SHADOW_TIMER = 1
@@ -30,12 +29,10 @@ class Blinds(Hass):
     STATE_NEUTRAL_TO_DAWN_TIMER = -1
     STATE_DAWN = -2
     STATE_DAWN_TO_HORIZONTAL_TIMER = -3
-    STATE_DAWN_HORIZONTAL = -4
-    STATE_DAWN_HORIZONTAL_TO_NEUTRAL_TIMER = -5
+    STATE_DAWN_HORIZONTAL_TO_NEUTRAL_TIMER = -4
 
     # Default config values
     DEFAULT_CONFIG = {
-        "unique_id": None,
         "facade": {
             "facade_offset_entry": -90,
             "facade_offset_exit": 90,
@@ -996,9 +993,6 @@ class Blinds(Hass):
             self.debug("Facade no longer in sun. Switching to NEUTRAL")
             self.timer = None
             return self.STATE_NEUTRAL
-
-    def handle_state_horizontal(self):
-        pass
 
     def handle_state_shadow_to_horizontal_timer(self):
         if self.in_sun() and self.params['shadow_active']:
