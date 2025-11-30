@@ -103,10 +103,9 @@ Living Room Blinds:
     shadow_brightness_threshold: 300
     shadow_height: 70
     shadow_angle: 45
-    shadow_active: True
+    comfort_temperature: 22 # When shadowing is active, the logic tries to close the blinds so that no direct sun in coming into the room. But in midsummer should also block more indirect sun, otherwise the room will also heat up. With this parameter you define till which temperature the "only block direct sun" is done and when temperature switches above this threshold, the blind angle is closed more than usual. For this feature you have to define a climate entity in "entities" block to provide current temperature.
   solar_heating_available: True
   solar_heating:
-    solar_heating_available: True
     solar_heating_angle: 20
     solar_heating_height: 80
     solar_heating_temperature: 22
