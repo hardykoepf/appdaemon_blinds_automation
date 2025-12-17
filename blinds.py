@@ -21,8 +21,7 @@ class Blinds(Hass):
     """Represents a single blinds with its configuration and state."""
 
     # States
-    STATE_HORIZONTAL_TO_NEUTRAL_TIMER = 5
-    STATE_HORIZONTAL = 4
+    STATE_HORIZONTAL_TO_NEUTRAL_TIMER = 4
     STATE_SHADOW_TO_HORIZONTAL_TIMER = 3
     STATE_SHADOW = 2
     STATE_NEUTRAL_TO_SHADOW_TIMER = 1
@@ -30,12 +29,10 @@ class Blinds(Hass):
     STATE_NEUTRAL_TO_DAWN_TIMER = -1
     STATE_DAWN = -2
     STATE_DAWN_TO_HORIZONTAL_TIMER = -3
-    STATE_DAWN_HORIZONTAL = -4
-    STATE_DAWN_HORIZONTAL_TO_NEUTRAL_TIMER = -5
+    STATE_DAWN_HORIZONTAL_TO_NEUTRAL_TIMER = -4
 
     # Default config values
     DEFAULT_CONFIG = {
-        "unique_id": None,
         "facade": {
             "facade_offset_entry": -90,
             "facade_offset_exit": 90,
@@ -274,10 +271,11 @@ class Blinds(Hass):
                     self.log(f"Configuration entity entities.climate: {self.params.get('entities', {}).get('climate')} could not be found in HASS")
                     result = False
         
-        if self.params.get('comfort_temperature'):
-            if not self.entity_exists(self.params.get('entities', {}).get('climate')):
-                    self.log(f"Configuration entity entities.climate: {self.params.get('entities', {}).get('climate')} could not be found in HASS")
-                    result = False
+        if self.params.get('shadow_active') is True:
+            if self.params.get('shadow', {}).get('comfort_temperature'):
+                if not self.entity_exists(self.params.get('entities', {}).get('climate')):
+                        self.log(f"Configuration entity entities.climate: {self.params.get('entities', {}).get('climate')} could not be found in HASS")
+                        result = False
 
         if self.params['facade']['min_elevation'] >= self.params['facade']['max_elevation']:
             self.log("Configuration error min_elevation is greater or equal max_elevation. Makes no sense.")
@@ -997,9 +995,6 @@ class Blinds(Hass):
             self.timer = None
             return self.STATE_NEUTRAL
 
-    def handle_state_horizontal(self):
-        pass
-
     def handle_state_shadow_to_horizontal_timer(self):
         if self.in_sun() and self.params['shadow_active']:
             # Check if solar heating should be active
@@ -1159,7 +1154,7 @@ class Blinds(Hass):
                 # nothing to change
                 return self.blinds_state
         else:
-            # When facade no longer in sun change to neutral
+            # When facade no longer in sun change to neutral 
             self.debug("Dawn handling no longer active. Switching to NEUTRAL")
             self.timer = None
             return self.STATE_NEUTRAL
@@ -1175,13 +1170,13 @@ class Blinds(Hass):
                 height = self.calculate_height()
 
                 perpendicular_flag = False
-                if self.params.get('comfort_temperature'):
-                    if self.params['comfort_temperature'] < self.current_temperature:
+                if self.params.get('shadow', {}).get('comfort_temperature'):
+                    if self.params['shadow']['comfort_temperature'] < self.current_temperature:
                         # When actual temperature higher than comfort temperature and solar heating is not available or active.
                         # Than use perpendicular setting to prevent from heating up by sun EXCEPT solar heating is active then it's winter
                         if not (self.params.get('solar_heating_available') and self.solar_heating_active == STATE_ON):
                             perpendicular_flag = True
-                            self.debug(f"Perpendicular Flag: {perpendicular_flag} Comfort Temperature: {self.params['comfort_temperature']} Current Temperature: {self.current_temperature}")
+                            self.debug(f"Perpendicular Flag: {perpendicular_flag} Comfort Temperature: {self.params['shadow']['comfort_temperature']} Current Temperature: {self.current_temperature}")
 
                 angle = self.calculate_angle(perpendicular=perpendicular_flag)
                 self.debug(f"handle_states: Calculated new height: {height}, angle: {angle}")
