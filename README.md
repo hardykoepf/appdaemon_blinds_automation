@@ -26,8 +26,8 @@ Living Room Blinds:
   entities:
     cover: cover.living_room # Cover from Home Assistant to be managed
     brightness_shadow: sensor.helligkeit_gesamt # Brightness Sensor delivering the LUX value of sky
-  facade:
-    facade_angle: 180
+  facade: # Details see down below -> Sun Position Tracking
+    facade_angle: 180 
     facade_offset_entry: -30
     facade_offset_exit: 30
     min_elevation: 10

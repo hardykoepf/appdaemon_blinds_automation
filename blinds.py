@@ -271,10 +271,11 @@ class Blinds(Hass):
                     self.log(f"Configuration entity entities.climate: {self.params.get('entities', {}).get('climate')} could not be found in HASS")
                     result = False
         
-        if self.params.get('comfort_temperature'):
-            if not self.entity_exists(self.params.get('entities', {}).get('climate')):
-                    self.log(f"Configuration entity entities.climate: {self.params.get('entities', {}).get('climate')} could not be found in HASS")
-                    result = False
+        if self.params.get('shadow_active') is True:
+            if self.params.get('shadow', {}).get('comfort_temperature'):
+                if not self.entity_exists(self.params.get('entities', {}).get('climate')):
+                        self.log(f"Configuration entity entities.climate: {self.params.get('entities', {}).get('climate')} could not be found in HASS")
+                        result = False
 
         if self.params['facade']['min_elevation'] >= self.params['facade']['max_elevation']:
             self.log("Configuration error min_elevation is greater or equal max_elevation. Makes no sense.")
@@ -1153,7 +1154,7 @@ class Blinds(Hass):
                 # nothing to change
                 return self.blinds_state
         else:
-            # When facade no longer in sun change to neutral
+            # When facade no longer in sun change to neutral 
             self.debug("Dawn handling no longer active. Switching to NEUTRAL")
             self.timer = None
             return self.STATE_NEUTRAL
@@ -1169,13 +1170,13 @@ class Blinds(Hass):
                 height = self.calculate_height()
 
                 perpendicular_flag = False
-                if self.params.get('comfort_temperature'):
-                    if self.params['comfort_temperature'] < self.current_temperature:
+                if self.params.get('shadow', {}).get('comfort_temperature'):
+                    if self.params['shadow']['comfort_temperature'] < self.current_temperature:
                         # When actual temperature higher than comfort temperature and solar heating is not available or active.
                         # Than use perpendicular setting to prevent from heating up by sun EXCEPT solar heating is active then it's winter
                         if not (self.params.get('solar_heating_available') and self.solar_heating_active == STATE_ON):
                             perpendicular_flag = True
-                            self.debug(f"Perpendicular Flag: {perpendicular_flag} Comfort Temperature: {self.params['comfort_temperature']} Current Temperature: {self.current_temperature}")
+                            self.debug(f"Perpendicular Flag: {perpendicular_flag} Comfort Temperature: {self.params['shadow']['comfort_temperature']} Current Temperature: {self.current_temperature}")
 
                 angle = self.calculate_angle(perpendicular=perpendicular_flag)
                 self.debug(f"handle_states: Calculated new height: {height}, angle: {angle}")
