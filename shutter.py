@@ -673,7 +673,10 @@ class Shutter(Hass):
         # This logic is only for managing the status input_booleans of solar heating. The blinds position are set in the calculate_position and angle method
         if self.params.get("solar_heating_available"):
             if self.solar_heating_active == STATE_ON:
-                if self.current_temperature > self.params['solar_heating']['solar_heating_temperature']:
+                # Only when facade is in sun, solar heating status should be on
+                if not self.in_sun() and self.solar_heating_status == STATE_ON:
+                    self.set_state(self.name_solar_heating_status, STATE_OFF)
+                elif self.current_temperature > self.params['solar_heating']['solar_heating_temperature']:
                     # Current Temperature above wanted temperature -> No more solar heating
                     self.hysterese_reached = True
                     # Update status
